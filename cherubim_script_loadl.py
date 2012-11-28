@@ -1,5 +1,5 @@
 import subprocess
-import chreub_config
+import cherub_config
 
 
 def cherub_boot(node_adresss):
