@@ -94,8 +94,9 @@ def cherub_node_load(node_name=None):
             return 1
         else:
             return 0
-    
+
     nodes = llstate([n[0] for n in cherub_config.cluster])
+    # valid task assigments page 196
 
     return nodes
 
@@ -115,12 +116,13 @@ def cherub_global_load():
 
 def llstate(node_name=None):
     """LoadLeveler State of netwerk node
-    
+
     TODO: caching needed?
+    TODO: query only managed nodes
     """
     if isinstance(node_name, str):
         node_name = [node_name]
-    machines = dict()
+    machines = []
     query = ll.ll_query(ll.MACHINES)
     if not ll.PyCObjValid(query):
         print 'Error during pyloadl.ll_query'
@@ -143,7 +145,8 @@ def llstate(node_name=None):
     elif count > 0:
         while ll.PyCObjValid(machine):
             get_data = functools.partial(ll.ll_get_data, machine)
-            machines[get_data(ll.LL_MachineName)] = {
+            machines.append({
+                'name': get_data(ll.LL_MachineName),
                 'startd': get_data(ll.LL_MachineStartdState),
                 'schedd': get_data(ll.LL_MachineScheddState),
                 'ldavg': get_data(ll.LL_MachineLoadAverage),
@@ -151,14 +154,16 @@ def llstate(node_name=None):
                     get_data(ll.LL_MachineConfiguredClassList)),
                 'avail_classes': element_count(
                     get_data(ll.LL_MachineAvailableClassList)),
-                'run': get_data(ll.LL_MachineStartdRunningJobs)}
+                'run': get_data(ll.LL_MachineStartdRunningJobs)
+            })
 
             machine = ll.ll_next_obj(query)
-    
+
     ll.ll_free_objs(machine)
     ll.ll_deallocate(query)
 
     return machines
+
 
 def llq():
     """LoadLeveler Job queue
@@ -185,39 +190,44 @@ def llq():
         print 'Error during pyloadl.ll_get_objs:', err
     elif count > 0:
         while ll.PyCObjValid(job):
+            name = ll.ll_get_data(job, ll.LL_JobName)
+            user = ll.ll_get_data(job, ll.LL_JobSubmittingUser)
             step = ll.ll_get_data(job, ll.LL_JobGetFirstStep)
             steps = []
             while ll.PyCObjValid(step):
-                state = ll.ll_get_data(step, ll.LL_StepState)
-                id     = ll.ll_get_data(step, ll.LL_StepID)
-                pri    = ll.ll_get_data(step, ll.LL_StepPriority)
-                jclass = ll.ll_get_data(step, ll.LL_StepJobClass)
+                get_data = functools.partial(ll.ll_get_data, step)
+                steps.append({
+                    'id': get_data(ll.LL_StepID),
+                    'state': get_data(ll.LL_StepState),
+                    'idle':
+                        get_data(ll.LL_StepState) == ll.STATE_IDLE,
+                    'deferred':
+                        get_data(ll.LL_StepState) == ll.STATE_DEFERRED,
+                    'pri': get_data(ll.LL_StepPriority),
+                    'class': get_data(ll.LL_StepJobClass),
+                    'parallel':
+                        get_data(ll.LL_StepParallelMode) == ll.PARALLEL_TYPE,
+                    'total_tasks': get_data(ll.LL_StepTotalTasksRequested),
+                    'tasks_per_node':
+                        get_data(ll.LL_StepTasksPerNodeRequested),
+                    'blocking': get_data(ll.LL_StepBlocking),
+                    'node_count': get_data(ll.LL_StepNodeCount),
+                    'shared':
+                        get_data(ll.LL_StepNodeUsage) == ll.SHARED,
+                    'node_geometry': get_data(ll.LL_StepTaskGeometry)
+                })
 
-                # added by CL:
-                mode   = ll.ll_get_data(step, ll.LL_StepParallelMode)
-                ntasks = ll.ll_get_data(step, ll.LL_StepTotalTasksRequested)
+                step = ll.ll_get_data(job, ll.LL_JobGetNextStep)
 
-                data = dict()
-
-                data['state'] = state
-                data['pri'] = pri
-                data['class'] = jclass
-                data['par'] = mode != 0
-                data['tasks'] = ntasks
-                steps.append(data)
-    
-                step = ll_get_data(job, ll.LL_JobGetNextStep)
-
-            jobs.append(steps)
+            jobs.append({'name': name, 'user': user, 'steps': steps})
             job = ll.ll_next_obj(query)
-    
+
     ll.ll_free_objs(job)
     ll.ll_deallocate(query)
 
     return jobs
 
 
-
 def element_count(l):
     """Count every elements occurrence"""
-    return [(x, l.count(x)) for x in set(l)]
+    return dict([(x, l.count(x)) for x in set(l)])
