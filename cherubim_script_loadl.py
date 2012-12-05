@@ -1,39 +1,47 @@
-import subprocess
 import cherub_config
+import pyloadl as ll
+import functools
+import subprocess
 
 
 def cherub_boot(node_adresss):
     """Boot network node
-    
-    TODO: remote boot network node (ask admin) 
+
+    TODO: remote boot network node (use rpower or ipmitool)
     """
     return 0
 
 
 def cherub_shutdown(node_address):
     """Shutdown network node
-    
-    TODO: remote shutdown network node (ask admin)
+
+    TODO: remote shutdown network node (use rpower or ipmitool)
     """
     return 0
 
 
 def cherub_sign_off(node_name):
     """Sign off network node from scheduler
-    
+
     TODO: sign off node from scheduler (to mark as offline)
             (llctrl -h host stop ?)
+          llctrl -h node_name drain
+          llctrl -h node_name stop (is this needed?)
     """
+    # return ll.ll_control(ll.LL_CONTROL_DRAIN, [node_name], [], [], [], 0)
     return 0
 
 
 def cherub_register(node_name):
     """Register network node at scheduler
-    
-    TODO: Register node at scheduler (for further scheduling) 
+
+    TODO: Register node at scheduler (for further scheduling)
             (llinit?, llctrl -h host start ?)
-        
+            llctrl -h node_name resume (if online)
+            llctrl -h node_name start [drained] (if offline)
+
     """
+    # return ll.ll_control(ll.LL_CONTROL_RESUME, [node_name], [], [], [], 0)
     return 0
 
 
@@ -52,10 +60,27 @@ def cherub_status(node_name):
     TODO: find correct tool to list node state and parse
         (llctl -L machine -h hostlist)
     """
-    return -1
+    STARTD_STATES = {
+        'Busy': 0, 'Drain': None, 'Down': -1, 'Idle': 1, 'Running': 0}
+        # TODO: What if startd Down and schedd Avail?
+
+    state = llstate(node_name)
+    if state is None or state['startd'] not in STARTD_STATES.keys():
+        return -1
+
+    status = STARTD_STATES[state['startd']]
+    if status is not None:
+        return status
+
+    rc = subprocess.Popen(['ping', '-c', '1', node_name],
+                          stdout=subprocess.PIPE).wait()
+    if rc == 0:
+        return 2
+    else:
+        return 3
 
 
-def cherub_node_load(node_name):
+def cherub_node_load(node_name=None):
     """Load of network node
 
     -1 = if an error occured
@@ -64,7 +89,15 @@ def cherub_node_load(node_name):
 
     TODO: analyse which nodes have to start (llstatus?)
     """
-    return 0
+    if node_name is not None:
+        if node_name in cherub_node_load():
+            return 1
+        else:
+            return 0
+    
+    nodes = llstate([n[0] for n in cherub_config.cluster])
+
+    return nodes
 
 
 def cherub_global_load():
@@ -78,3 +111,113 @@ def cherub_global_load():
     TODO: ask admin if needed for scheduler
     """
     return 0
+
+
+def llstate(node_name=None):
+    """LoadLeveler State of netwerk node
+    
+    TODO: caching needed?
+    """
+    if isinstance(node_name, str):
+        node_name = [node_name]
+    machines = dict()
+    query = ll.ll_query(ll.MACHINES)
+    if not ll.PyCObjValid(query):
+        print 'Error during pyloadl.ll_query'
+        return machines
+
+    if node_name is not None:
+        rc = ll.ll_set_request(query, ll.QUERY_HOST, node_name,
+                               ll.ALL_DATA)
+    else:
+        rc = ll.ll_set_request(query, ll.QUERY_ALL, '', ll.ALL_DATA)
+
+    if rc != 0:
+        print 'Error during pyloadl.ll_set_request:', rc
+        ll.ll_deallocate(query)
+        return machines
+
+    machine, count, err = ll.ll_get_objs(query, ll.LL_CM, '')
+    if err != 0:
+        print 'Error during pyloadl.ll_get_objs:', err
+    elif count > 0:
+        while ll.PyCObjValid(machine):
+            get_data = functools.partial(ll.ll_get_data, machine)
+            machines[get_data(ll.LL_MachineName)] = {
+                'startd': get_data(ll.LL_MachineStartdState),
+                'schedd': get_data(ll.LL_MachineScheddState),
+                'ldavg': get_data(ll.LL_MachineLoadAverage),
+                'conf_classes': element_count(
+                    get_data(ll.LL_MachineConfiguredClassList)),
+                'avail_classes': element_count(
+                    get_data(ll.LL_MachineAvailableClassList)),
+                'run': get_data(ll.LL_MachineStartdRunningJobs)}
+
+            machine = ll.ll_next_obj(query)
+    
+    ll.ll_free_objs(machine)
+    ll.ll_deallocate(query)
+
+    return machines
+
+def llq():
+    """LoadLeveler Job queue
+
+    TODO: which state is the important? Idle or Not Queued?
+        I think Not Queued is not the right (page 722).
+        Derefered for parallel Jobs is interesting.
+    """
+    jobs = []
+    query = ll.ll_query(ll.JOBS)
+    if not ll.PyCObjValid(query):
+        print 'Error during pyloadl.ll_query'
+        return jobs
+
+    rc = ll.ll_set_request(query, ll.QUERY_ALL, '', ll.ALL_DATA)
+
+    if rc != 0:
+        print 'Error during pyloadl.ll_set_request:', rc
+        ll.ll_deallocate(query)
+        return jobs
+
+    job, count, err = ll.ll_get_objs(query, ll.LL_CM, '')
+    if err != 0:
+        print 'Error during pyloadl.ll_get_objs:', err
+    elif count > 0:
+        while ll.PyCObjValid(job):
+            step = ll.ll_get_data(job, ll.LL_JobGetFirstStep)
+            steps = []
+            while ll.PyCObjValid(step):
+                state = ll.ll_get_data(step, ll.LL_StepState)
+                id     = ll.ll_get_data(step, ll.LL_StepID)
+                pri    = ll.ll_get_data(step, ll.LL_StepPriority)
+                jclass = ll.ll_get_data(step, ll.LL_StepJobClass)
+
+                # added by CL:
+                mode   = ll.ll_get_data(step, ll.LL_StepParallelMode)
+                ntasks = ll.ll_get_data(step, ll.LL_StepTotalTasksRequested)
+
+                data = dict()
+
+                data['state'] = state
+                data['pri'] = pri
+                data['class'] = jclass
+                data['par'] = mode != 0
+                data['tasks'] = ntasks
+                steps.append(data)
+    
+                step = ll_get_data(job, ll.LL_JobGetNextStep)
+
+            jobs.append(steps)
+            job = ll.ll_next_obj(query)
+    
+    ll.ll_free_objs(job)
+    ll.ll_deallocate(query)
+
+    return jobs
+
+
+
+def element_count(l):
+    """Count every elements occurrence"""
+    return [(x, l.count(x)) for x in set(l)]
