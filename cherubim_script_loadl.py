@@ -191,7 +191,13 @@ def llq():
     elif count > 0:
         while ll.PyCObjValid(job):
             name = ll.ll_get_data(job, ll.LL_JobName)
-            user = ll.ll_get_data(job, ll.LL_JobSubmittingUser)
+            cred = ll.ll_get_data(job, ll.LL_JobCredential)
+            if ll.PyCObjValid(cred):
+                user = ll.ll_get_data(cred, ll.LL_CredentialUserName)
+                group = ll.ll_get_data(cred, ll.LL_CredentialGroupName)
+            else:
+                print 'Error during pyloadl.ll_get_data for credentials'
+
             step = ll.ll_get_data(job, ll.LL_JobGetFirstStep)
             steps = []
             while ll.PyCObjValid(step):
@@ -214,12 +220,13 @@ def llq():
                     'node_count': get_data(ll.LL_StepNodeCount),
                     'shared':
                         get_data(ll.LL_StepNodeUsage) == ll.SHARED,
-                    'node_geometry': get_data(ll.LL_StepTaskGeometry)
+                    'node_geometry': get_data(ll.LL_StepTaskGeometry),
                 })
 
                 step = ll.ll_get_data(job, ll.LL_JobGetNextStep)
 
-            jobs.append({'name': name, 'user': user, 'steps': steps})
+            jobs.append({'name': name, 'user': user, 'group': group,
+                         'steps': steps})
             job = ll.ll_next_obj(query)
 
     ll.ll_free_objs(job)
