@@ -43,7 +43,7 @@ A [Cherub](http://www.cs.uni-potsdam.de/bs/research/cluster/index.html#greenit "
 - use accumulated variables for every class to skip faster on insufficient resources
 
 ## Questions
-- Is `ConsumableMemory` used?
+- Is `ConsumableMemory` and `ConsumableCpus` used?
 - Does every job has a `class`?
 - Is `group` used? Are there any restrictions?
 - Is `task_geometry` used?
