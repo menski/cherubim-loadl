@@ -36,7 +36,11 @@ A [Cherub](http://www.cs.uni-potsdam.de/bs/research/cluster/index.html#greenit "
             find RUNNING nodes with available resources first and then IDLE nodes and finally DRAINED
             # respecting nodes/task_per_node and blocking values
     }
-        
+    
+## TODO
+- user/group restrictions
+- `# @requirements = ( Machine == "dx163" )` usage
+- dependency handling        
 
 ## Optimization
 - cache node status
