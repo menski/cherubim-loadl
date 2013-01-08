@@ -57,8 +57,6 @@ def cherub_status(node_name):
     CHERUB_OFFLINE =  2 = if the node is booted but NOT REGISTERT to the RMS
     CHERUB_DOWN    =  3 = if the node is shutdown and NOT REGISTERT to the RMS
 
-    TODO: find correct tool to list node state and parse
-        (llctl -L machine -h hostlist)
     """
     STARTD_STATES = {
         'Busy': 0, 'Drain': None, 'Down': -1, 'Idle': 1, 'Running': 0}
@@ -87,18 +85,36 @@ def cherub_node_load(node_name=None):
      0 = the given node has no load
      1 = the given node has load (to indicate that he must be started)
 
-    TODO: analyse which nodes have to start (llstatus?)
+    TODO: which state is the important? Idle or Not Queued?
+        I think Not Queued is not the right (page 722).
+        Derefered for parallel Jobs is interesting.
+    TODO: consider user/group restriction
     """
-    if node_name is not None:
-        if node_name in cherub_node_load():
-            return 1
-        else:
-            return 0
 
-    nodes = llstate([n[0] for n in cherub_config.cluster])
+    # state of all idle, deffered and not queued jobs
+    jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
+
+    # quit if no jobs are queued
+    if not jobs:
+        return [] if node_name is None else 0
+
+    # state of all running, idle and drained nodes
+    nodes = llstate([n[0] for n in cherub_config.cluster],
+                    ('Running', 'Idle', 'Drained'))
     # valid task assigments page 196
 
+    for job in jobs:
+        print job
+
     return nodes
+
+    # if node_name is not None:
+    #     if node_name in cherub_node_load():
+    #         return 1
+    #     else:
+    #         return 0
+    # else:
+    #     return nodes
 
 
 def cherub_global_load():
@@ -109,28 +125,25 @@ def cherub_global_load():
            the nodes how are selected directly like select:nodexxx+nodexxx...
            (so only nodes with select:2 for example)
 
-    TODO: ask admin if needed for scheduler
+    Not used for loadl. Every node serves various classes.
     """
     return 0
 
 
-def llstate(node_name=None):
+def llstate(nodes=None, filter=None):
     """LoadLeveler State of netwerk node
 
     TODO: caching needed?
-    TODO: query only managed nodes
     """
-    if isinstance(node_name, str):
-        node_name = [node_name]
+
     machines = []
     query = ll.ll_query(ll.MACHINES)
     if not ll.PyCObjValid(query):
         print 'Error during pyloadl.ll_query'
         return machines
 
-    if node_name is not None:
-        rc = ll.ll_set_request(query, ll.QUERY_HOST, node_name,
-                               ll.ALL_DATA)
+    if nodes is not None:
+        rc = ll.ll_set_request(query, ll.QUERY_HOST, nodes, ll.ALL_DATA)
     else:
         rc = ll.ll_set_request(query, ll.QUERY_ALL, '', ll.ALL_DATA)
 
@@ -144,18 +157,20 @@ def llstate(node_name=None):
         print 'Error during pyloadl.ll_get_objs:', err
     elif count > 0:
         while ll.PyCObjValid(machine):
-            get_data = functools.partial(ll.ll_get_data, machine)
-            machines.append({
-                'name': get_data(ll.LL_MachineName),
-                'startd': get_data(ll.LL_MachineStartdState),
-                'schedd': get_data(ll.LL_MachineScheddState),
-                'ldavg': get_data(ll.LL_MachineLoadAverage),
-                'conf_classes': element_count(
-                    get_data(ll.LL_MachineConfiguredClassList)),
-                'avail_classes': element_count(
-                    get_data(ll.LL_MachineAvailableClassList)),
-                'run': get_data(ll.LL_MachineStartdRunningJobs)
-            })
+            data = functools.partial(ll.ll_get_data, machine)
+            startd = data(ll.LL_MachineStartdState)
+            if filter is None or startd in filter:
+                machines.append({
+                    'name': data(ll.LL_MachineName),
+                    'startd': startd,
+                    'schedd': data(ll.LL_MachineScheddState),
+                    'ldavg': data(ll.LL_MachineLoadAverage),
+                    'conf_classes': element_count(
+                        data(ll.LL_MachineConfiguredClassList)),
+                    'avail_classes': element_count(
+                        data(ll.LL_MachineAvailableClassList)),
+                    'run': data(ll.LL_MachineStartdRunningJobs)
+                })
 
             machine = ll.ll_next_obj(query)
 
@@ -165,12 +180,11 @@ def llstate(node_name=None):
     return machines
 
 
-def llq():
+def llq(filter=None):
     """LoadLeveler Job queue
 
-    TODO: which state is the important? Idle or Not Queued?
-        I think Not Queued is not the right (page 722).
-        Derefered for parallel Jobs is interesting.
+    TODO: requierements keyword
+    TODO: dependency keyword
     """
     jobs = []
     query = ll.ll_query(ll.JOBS)
@@ -201,32 +215,31 @@ def llq():
             step = ll.ll_get_data(job, ll.LL_JobGetFirstStep)
             steps = []
             while ll.PyCObjValid(step):
-                get_data = functools.partial(ll.ll_get_data, step)
-                steps.append({
-                    'id': get_data(ll.LL_StepID),
-                    'state': get_data(ll.LL_StepState),
-                    'idle':
-                        get_data(ll.LL_StepState) == ll.STATE_IDLE,
-                    'deferred':
-                        get_data(ll.LL_StepState) == ll.STATE_DEFERRED,
-                    'pri': get_data(ll.LL_StepPriority),
-                    'class': get_data(ll.LL_StepJobClass),
-                    'parallel':
-                        get_data(ll.LL_StepParallelMode) == ll.PARALLEL_TYPE,
-                    'total_tasks': get_data(ll.LL_StepTotalTasksRequested),
-                    'tasks_per_node':
-                        get_data(ll.LL_StepTasksPerNodeRequested),
-                    'blocking': get_data(ll.LL_StepBlocking),
-                    'node_count': get_data(ll.LL_StepNodeCount),
-                    'shared':
-                        get_data(ll.LL_StepNodeUsage) == ll.SHARED,
-                    'node_geometry': get_data(ll.LL_StepTaskGeometry),
-                })
+                data = functools.partial(ll.ll_get_data, step)
+                state = data(ll.LL_StepState)
+                if filter is None or state in filter:
+                    steps.append({
+                        'id': data(ll.LL_StepID),
+                        'state': state,
+                        'pri': data(ll.LL_StepPriority),
+                        'class': data(ll.LL_StepJobClass),
+                        'parallel':
+                            data(ll.LL_StepParallelMode) == ll.PARALLEL_TYPE,
+                        'total_tasks': data(ll.LL_StepTotalTasksRequested),
+                        'tasks_per_node':
+                            data(ll.LL_StepTasksPerNodeRequested),
+                        'blocking': data(ll.LL_StepBlocking),
+                        'node_count': data(ll.LL_StepNodeCount),
+                        'shared':
+                            data(ll.LL_StepNodeUsage) == ll.SHARED,
+                        'node_geometry': data(ll.LL_StepTaskGeometry),
+                    })
 
                 step = ll.ll_get_data(job, ll.LL_JobGetNextStep)
 
-            jobs.append({'name': name, 'user': user, 'group': group,
-                         'steps': steps})
+            if steps:
+                jobs.append({'name': name, 'user': user, 'group': group,
+                             'steps': steps})
             job = ll.ll_next_obj(query)
 
     ll.ll_free_objs(job)
