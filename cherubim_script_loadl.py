@@ -17,6 +17,12 @@ import cherub_config
 import pyloadl as ll
 import functools
 import subprocess
+import logging
+
+log = logging.getLogger()
+log.handlers[0].setFormatter(
+    logging.Formatter('%(asctime)s [%(levelname)-8s] %(message)s'))
+log.setLevel(logging.DEBUG)
 
 
 def cherub_boot(node_adresss):
@@ -104,10 +110,13 @@ def cherub_node_load(node_name=None):
         I think Not Queued is not the right (page 722).
         Derefered for parallel Jobs is interesting.
     TODO: consider user/group restriction
+    TODO: node min/max notation
+    TODO: step priority
     """
 
-    # state of all idle, deffered and not queued jobs
+    # state of all idle, deferred and not queued jobs
     jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
+    log.debug('#Jobs: %d', len(jobs))
 
     # quit if no jobs are queued
     if not jobs:
@@ -116,20 +125,88 @@ def cherub_node_load(node_name=None):
     # state of all running, idle and drained nodes
     nodes = llstate([n[0] for n in cherub_config.cluster],
                     ('Running', 'Idle', 'Drained'))
-    # valid task assigments page 196
+    for node in nodes:
+        log.debug('node: %s (%s) conf: %s avail: %s', node['name'],
+                  node['startd'], node['conf_classes'], node['avail_classes'])
+    # split nodes on startd state
+    state = {'Running': [], 'Idle': [], 'Drained': []}
+    for node in nodes:
+        state[node['startd']].append(node)
+    log.debug('#Nodes: %d (#Running: %d #Idle: %d #Drained: %d)',
+              len(nodes), len(state['Running']), len(state['Idle']),
+              len(state['Drained']))
 
+    # LoadL doc: valid keyword combinations (Page 196)
+    # Keyword          | Valid Combinations
+    # --------------------------------------
+    # total_tasks      | x  x
+    # tasks_per_node   |       x   x
+    # node = <min,max> |       x
+    # node = number    | x         x
+    # task_geometry    |              x
+    # blocking         |    x
+
+    nodes_load = set()
     for job in jobs:
-        print job
+        log.debug('Handle job %s', job['name'])
+        log.debug('Contains %d step(s)', len(job['steps']))
+        for step in job['steps']:
+            log.debug(step)
+            if step['parallel']:
+                if step('task_geometry'):
+                    log.debug('TODO: implement task_geometry')
+                    pass
+            else:
+                # serial step
+                log.debug('Schedule serial step')
+                if step['shared']:
+                    node = schedule_serial_step(step, state['Running'])
+                    if node is not None:
+                        nodes_load.add(node['name'])
+                        if avail_classes_count(node) == 0:
+                            state['Running'].remove(node)
+                        continue
+                node = schedule_serial_step(step, state['Idle'])
+                if node is not None:
+                    nodes_load.add(node['name'])
+                    state['Idle'].remove(node)
+                    if step['shared'] and avail_classes_count(node) > 0:
+                        state['Running'].append(node)
+                    continue
+                node = schedule_serial_step(step, state['Drained'])
+                if node is not None:
+                    nodes_load.add(node['name'])
+                    state['Drained'].remove(node)
+                    if step['shared'] and avail_classes_count(node) > 0:
+                        state['Running'].append(node)
+                    continue
+                log.info('Unable to schedule step %s', step['id'])
 
-    return nodes
+    log.debug('nodes_load: %s', nodes_load)
 
-    # if node_name is not None:
-    #     if node_name in cherub_node_load():
-    #         return 1
-    #     else:
-    #         return 0
-    # else:
-    #     return nodes
+    if node_name is not None:
+        return 1 if node_name in nodes_load else 0
+    else:
+        return [1 if n[0] in nodes_load else 0 for n in cherub_config.cluster]
+
+
+def schedule_serial_step(step, nodes):
+    for node in sorted(nodes, cmp=compare_classes):
+        if node['startd'] == 'Drained':
+            classes = node['conf_classes']
+        else:
+            classes = node['avail_classes']
+        log.debug('Try to schedule step %s on node %s',
+                  step['id'], node['name'])
+        log.debug('Step class: %s  Avail Classes: %s', step['class'], classes)
+        if classes.get(step['class'], 0) > 0:
+            if node['startd'] == 'Drained':
+                node['avail_classes'] = dict(node['conf_classes'])
+            node['avail_classes'][step['class']] -= 1
+            log.info('step %s scheduled on node %s',
+                     step['id'], node['name'])
+            return node
+    return None
 
 
 def cherub_global_load():
@@ -247,7 +324,7 @@ def llq(filter=None):
                         'node_count': data(ll.LL_StepNodeCount),
                         'shared':
                             data(ll.LL_StepNodeUsage) == ll.SHARED,
-                        'node_geometry': data(ll.LL_StepTaskGeometry),
+                        'task_geometry': data(ll.LL_StepTaskGeometry),
                     })
 
                 step = ll.ll_get_data(job, ll.LL_JobGetNextStep)
@@ -266,3 +343,29 @@ def llq(filter=None):
 def element_count(l):
     """Count every elements occurrence"""
     return dict([(x, l.count(x)) for x in set(l)])
+
+
+def avail_classes_count(node):
+    return sum(node['avail_classes'].values())
+
+
+def compare_classes(a, b):
+    """ Compare two nodes by their classes
+
+    Compare by:
+        1. number of all available classes (short: 4, medium: 4) => 8
+        2. number of different available classes (short: 4, medium: 4) => 2
+        3. number of different configured classes (short: 8) => 1
+
+    """
+    a_count = avail_classes_count(a)
+    b_count = avail_classes_count(b)
+    if a_count != b_count:
+        return cmp(a_count, b_count)
+    a_count = len(a['avail_classes'])
+    b_count = len(b['avail_classes'])
+    if a_count != b_count:
+        return cmp(a_count, b_count)
+    a_count = len(a['conf_classes'])
+    b_count = len(b['conf_classes'])
+    return cmp(a_count, b_count)
