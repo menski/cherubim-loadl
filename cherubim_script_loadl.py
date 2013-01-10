@@ -209,21 +209,21 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
             node = schedule_parallel_group(step, group, state['Running'])
             if node is not None:
                 nodes_load.append(node)
-                if not multiple_use or avail_classes_count(node) == 0:
+                if not multiple_use or classes_count(node) == 0:
                     state['Running'].remove(node)
                 continue
         node = schedule_parallel_group(step, group, state['Idle'])
         if node is not None:
             nodes_load.append(node)
             state['Idle'].remove(node)
-            if multiple_use and shared and avail_classes_count(node) > 0:
+            if multiple_use and shared and classes_count(node) > 0:
                 state['Running'].append(node)
             continue
         node = schedule_parallel_group(step, group, state['Drained'])
         if node is not None:
             nodes_load.append(node)
             state['Drained'].remove(node)
-            if multiple_use and shared and avail_classes_count(node) > 0:
+            if multiple_use and shared and classes_count(node) > 0:
                 state['Running'].append(node)
             continue
         log.info('Unable to schedule step %s', step['id'])
@@ -231,7 +231,7 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
     # add selected nodes if there are unused classes
     if shared:
         for node in nodes_load:
-            if avail_classes_count(node) > 0:
+            if classes_count(node) > 0:
                 state['Running'].append(node)
     # apply new state
     nodes = state
@@ -494,8 +494,8 @@ def element_count(l):
     return dict([(x, l.count(x)) for x in set(l)])
 
 
-def avail_classes_count(node):
-    return sum(node['avail_classes'].values())
+def classes_count(node, type='avail_classes'):
+    return sum(node[type].values())
 
 
 def compare_classes(a, b):
@@ -504,15 +504,20 @@ def compare_classes(a, b):
     Compare by:
         1. number of all available classes (short: 4, medium: 4) => 8
         2. number of different available classes (short: 4, medium: 4) => 2
-        3. number of different configured classes (short: 8) => 1
+        3. number of all configured classes (short: 2, medium: 2) => 4
+        4. number of different configured classes (short: 2) => 1
 
     """
-    a_count = avail_classes_count(a)
-    b_count = avail_classes_count(b)
+    a_count = classes_count(a)
+    b_count = classes_count(b)
     if a_count != b_count:
         return cmp(a_count, b_count)
     a_count = len(a['avail_classes'])
     b_count = len(b['avail_classes'])
+    if a_count != b_count:
+        return cmp(a_count, b_count)
+    a_count = classes_count(a, 'conf_classes')
+    b_count = classes_count(b, 'conf_classes')
     if a_count != b_count:
         return cmp(a_count, b_count)
     a_count = len(a['conf_classes'])
