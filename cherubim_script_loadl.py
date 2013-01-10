@@ -20,9 +20,11 @@ import subprocess
 import logging
 
 log = logging.getLogger()
-log.handlers[0].setFormatter(
-    logging.Formatter('%(asctime)s [%(levelname)-8s] %(message)s'))
 log.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)-8s] %(message)s'))
+log.addHandler(ch)
 
 
 def cherub_boot(node_adresss):
