@@ -109,12 +109,14 @@ def cherub_node_load(node_name=None):
      1 = the given node has load (to indicate that he must be started)
 
     TODO: which state is the important? Idle or Not Queued?
-        I think Not Queued is not the right (page 722).
-        Derefered for parallel Jobs is interesting.
+          I think Not Queued is not the right (page 722).
+          Derefered for parallel Jobs is interesting.
     TODO: consider user/group restriction
     TODO: node min/max notation
     TODO: step priority
     """
+
+    abort = 0 if node_name is not None else [0]*len(cherub_config.cluster)
 
     # state of all idle, deferred and not queued jobs
     jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
@@ -122,11 +124,13 @@ def cherub_node_load(node_name=None):
 
     # quit if no jobs are queued
     if not jobs:
-        return [] if node_name is None else 0
+        return abort
 
     # state of all running, idle and drained nodes
     nodes = llstate([n[0] for n in cherub_config.cluster],
                     ('Running', 'Idle', 'Drained'))
+    if not nodes:
+        return abort
     for node in nodes:
         log.debug('Node: %s (%s) conf: %s avail: %s', node['name'],
                   node['startd'], node['conf_classes'], node['avail_classes'])
@@ -137,6 +141,8 @@ def cherub_node_load(node_name=None):
     log.debug('#Nodes: %d (#Running: %d #Idle: %d #Drained: %d)',
               len(nodes), len(state['Running']), len(state['Idle']),
               len(state['Drained']))
+    if not state['Idle'] + state['Drained']:
+        return abort
 
     # LoadL doc: valid keyword combinations (Page 196)
     # Keyword          | Valid Combinations
