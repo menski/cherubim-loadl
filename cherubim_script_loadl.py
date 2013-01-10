@@ -153,9 +153,18 @@ def cherub_node_load(node_name=None):
         for step in job['steps']:
             log.debug(step)
             if step['parallel']:
-                if step('task_geometry'):
-                    log.debug('TODO: implement task_geometry')
-                    pass
+                if step['total_tasks'] > 0:
+                    nodes = schedule_total_tasks(step, state)
+                elif step['tasks_per_node'] > 0:
+                    nodes = schedule_tasks_per_node(step, state)
+                elif step['task_geometry']:
+                    nodes = schedule_task_geometry(step, state)
+                else:
+                    log.error('Invalid keyword combination for step %s',
+                              step['id'])
+                    continue
+                if nodes is not None:
+                    nodes_load.update(nodes)
             else:
                 # serial step
                 log.debug('Schedule serial step')
@@ -192,6 +201,7 @@ def cherub_node_load(node_name=None):
 
 def schedule_serial_step(step, nodes):
     for node in sorted(nodes, cmp=compare_classes):
+        # TODO: test if necessary
         if node['startd'] == 'Drained':
             classes = node['conf_classes']
         else:
@@ -200,6 +210,7 @@ def schedule_serial_step(step, nodes):
                   step['id'], node['name'])
         log.debug('Step class: %s  Avail Classes: %s', step['class'], classes)
         if classes.get(step['class'], 0) > 0:
+            # TODO: test if necessary
             if node['startd'] == 'Drained':
                 node['avail_classes'] = dict(node['conf_classes'])
             node['avail_classes'][step['class']] -= 1
@@ -207,6 +218,104 @@ def schedule_serial_step(step, nodes):
                      step['id'], node['name'])
             return node
     return None
+
+
+def schedule_parallel_step(step, groups, nodes, multiple_use=False):
+    nodes_load = []
+    shared = step['shared']
+    # copy state so on error the state remains the same
+    state = dict(nodes)
+    log.debug('Step %s has groups: %s', step['id'], groups)
+    # TODO: does loadl schedule multiple groups on one node if there are
+    #       unused nodes for total_tasks scheduling?
+    for group in groups:
+        if shared:
+            node = schedule_parallel_group(step, group, state['Running'])
+            if node is not None:
+                nodes_load.append(node)
+                if not multiple_use or avail_classes_count(node) == 0:
+                    state['Running'].remove(node)
+                continue
+        node = schedule_parallel_group(step, group, state['Idle'])
+        if node is not None:
+            nodes_load.append(node)
+            state['Idle'].remove(node)
+            if multiple_use and shared and avail_classes_count(node) > 0:
+                state['Running'].append(node)
+            continue
+        node = schedule_parallel_group(step, group, state['Drained'])
+        if node is not None:
+            nodes_load.append(node)
+            state['Drained'].remove(node)
+            if multiple_use and shared and avail_classes_count(node) > 0:
+                state['Running'].append(node)
+            continue
+        log.info('Unable to schedule step %s', step['id'])
+        return None
+    # add selected nodes if there are unused classes
+    if shared:
+        for node in nodes_load:
+            if avail_classes_count(node) > 0:
+                state['Running'].append(node)
+    # apply new state
+    nodes = state
+    return set([node['name'] for node in nodes_load])
+
+
+def schedule_parallel_group(step, group, nodes):
+    for node in sorted(nodes, cmp=compare_classes):
+        # TODO: test if necessary
+        if node['startd'] == 'Drained':
+            classes = node['conf_classes']
+        else:
+            classes = node['avail_classes']
+        log.debug('Try to schedule step %s on node %s',
+                  step['id'], node['name'])
+        log.debug('Step class: %s Group: %d  Avail Classes: %s',
+                  step['class'], group, classes)
+        if classes.get(step['class'], 0) >= group:
+            # TODO: test if necessary
+            if node['startd'] == 'Drained':
+                node['avail_classes'] = dict(node['conf_classes'])
+            node['avail_classes'][step['class']] -= group
+            log.info('step %s scheduled on node %s',
+                     step['id'], node['name'])
+            return node
+    return None
+
+
+def schedule_total_tasks(step, nodes):
+    # TODO: handle unlimited blocking
+    total_tasks = step['total_tasks']
+    blocking = step['blocking']
+    node_count = step['node_count']
+    nodes_load = set()
+    # copy state so on error the state remains the same
+    state = dict(nodes)
+    if blocking > 0 and node_count == 0:
+        groups = [blocking] * (total_tasks / blocking)
+        if total_tasks % blocking != 0:
+            groups.append(total_tasks % blocking)
+    elif node_count > 0 and blocking == 0:
+        groups = []
+        for n in range(node_count, 0, -1):
+            groups.append((total_tasks - sum(groups)) / n)
+    else:
+        log.error('Invalid keyword combination for step %s', step['id'])
+        return None
+    return schedule_parallel_step(step, groups, nodes, True)
+
+
+def schedule_tasks_per_node(step, nodes):
+    # TODO: implement node min max notation
+    groups = [step['tasks_per_node']] * step['node_count']
+    return schedule_parallel_step(step, groups, nodes)
+
+
+def schedule_task_geometry(step, nodes):
+    # TODO: parse task_geometry api output
+    groups = task_geometry
+    return schedule_parallel_step(step, groups, nodes)
 
 
 def cherub_global_load():
