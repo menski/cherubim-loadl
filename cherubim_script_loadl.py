@@ -180,6 +180,15 @@ def cherub_node_load(node_name=None):
 
 
 def schedule_parallel_step(step, groups, nodes, multiple_use=False):
+    """ Find nodes for a parallel step
+
+    Every step requires a number of tasks on different nodes. The number
+    of tasks is listed in groups. If multiple_use is True multiple groups
+    can be scheduled on the same node if the step is shared.
+
+    Returns a set of node names with load or None on error.
+
+    """
     nodes_load = []
     shared = step['shared']
     # copy state so on error the state remains the same
@@ -222,6 +231,14 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
 
 
 def schedule_parallel_group(step, group, nodes):
+    """ Find a single node for a task group
+
+    Find a suitable node for a task group. The nodes are sorted by the
+    compare_classes function. So nodes with lower available resources are
+    preferred.
+
+    Return suitable node or None on error.
+    """
     for node in sorted(nodes, cmp=compare_classes):
         # TODO: test if necessary
         if node['startd'] == 'Drained':
@@ -244,7 +261,34 @@ def schedule_parallel_group(step, group, nodes):
 
 
 def schedule_total_tasks(step, nodes):
-    # TODO: handle unlimited blocking
+    """ Schedule parallel task with total_tasks keyword
+
+    The total_tasks keyword is valid with the node or blocking keyword. The
+    group calculation is based on the description from the loadl
+    documentation. See below.
+
+    node keyword:
+        "When you specify the node keyword with the total_tasks keyword, the
+         assignment function will allocate all of the tasks in the job step
+         evenly among however many nodes you have specified.
+
+         If the number of total_tasks is not evenly divisible by the number of
+         nodes, then the assignment function will assign any larger groups to
+         the first nodes on the list that can accept them."
+
+    blocking keyword:
+        "When you specify blocking, tasks are allocated to machines in groups
+        (blocks) of the specified number (blocking factor).  The assignment
+        function will assign one block at a time to the machine which is next
+        in the order of priority until all of the tasks have been assigned. If
+        the total number of tasks are not evenly divisible by the blocking
+        factor, the remainder of tasks are allocated to a single node."
+
+    Returns a set of node names with load or None on error.
+
+    TODO: handle unlimited blocking
+
+    """
     total_tasks = step['total_tasks']
     blocking = step['blocking']
     node_count = step['node_count']
@@ -266,13 +310,42 @@ def schedule_total_tasks(step, nodes):
 
 
 def schedule_tasks_per_node(step, nodes):
-    # TODO: implement node min max notation
+    """ Schedule parallel task with task_per_node keyword
+
+    The task_per_node keyword is only valid with the node keyword. The
+    group calculation is based on the description from the loadl
+    documentation. See below.
+
+    node keyword:
+        "When you specify the node keyword with the tasks_per_node keyword,
+        the assignment function will assign tasks in groups of the specified
+        value among the specified number of nodes."
+
+    Returns a set of node names with load or None on error.
+
+    TODO: implement node min max notation
+
+    """
     groups = [step['tasks_per_node']] * step['node_count']
     return schedule_parallel_step(step, groups, nodes)
 
 
 def schedule_task_geometry(step, nodes):
-    # TODO: parse task_geometry api output
+    """ Schedule parallel task with task_geometry keyword
+
+    The groups are given by the task_geometry keyword as stated by the
+    loadl documentation. See below.
+
+    task_geometry keyword:
+        "The task_geometry keyword allows you to specify which tasks run
+        together on the same machines, although you cannot specify which
+        machines."
+
+    Returns a set of node names with load or None on error.
+
+    TODO: parse task_geometry api output
+
+    """
     groups = task_geometry
     return schedule_parallel_step(step, groups, nodes)
 
