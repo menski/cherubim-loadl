@@ -126,7 +126,7 @@ def cherub_node_load(node_name=None):
     nodes = llstate([n[0] for n in cherub_config.cluster],
                     ('Running', 'Idle', 'Drained'))
     for node in nodes:
-        log.debug('node: %s (%s) conf: %s avail: %s', node['name'],
+        log.debug('Node: %s (%s) conf: %s avail: %s', node['name'],
                   node['startd'], node['conf_classes'], node['avail_classes'])
     # split nodes on startd state
     state = {'Running': [], 'Idle': [], 'Drained': []}
@@ -148,50 +148,30 @@ def cherub_node_load(node_name=None):
 
     nodes_load = set()
     for job in jobs:
-        log.debug('Handle job %s', job['name'])
-        log.debug('Contains %d step(s)', len(job['steps']))
+        log.debug('Handle job %s (contains %s step[s])',
+                  job['name'], len(job['steps']))
         for step in job['steps']:
-            log.debug(step)
-            if step['parallel']:
-                if step['total_tasks'] > 0:
-                    nodes = schedule_total_tasks(step, state)
-                elif step['tasks_per_node'] > 0:
-                    nodes = schedule_tasks_per_node(step, state)
-                elif step['task_geometry']:
-                    nodes = schedule_task_geometry(step, state)
-                else:
-                    log.error('Invalid keyword combination for step %s',
-                              step['id'])
-                    continue
-                if nodes is not None:
-                    nodes_load.update(nodes)
-            else:
-                # serial step
-                log.debug('Schedule serial step')
-                if step['shared']:
-                    node = schedule_serial_step(step, state['Running'])
-                    if node is not None:
-                        nodes_load.add(node['name'])
-                        if avail_classes_count(node) == 0:
-                            state['Running'].remove(node)
-                        continue
-                node = schedule_serial_step(step, state['Idle'])
-                if node is not None:
-                    nodes_load.add(node['name'])
-                    state['Idle'].remove(node)
-                    if step['shared'] and avail_classes_count(node) > 0:
-                        state['Running'].append(node)
-                    continue
-                node = schedule_serial_step(step, state['Drained'])
-                if node is not None:
-                    nodes_load.add(node['name'])
-                    state['Drained'].remove(node)
-                    if step['shared'] and avail_classes_count(node) > 0:
-                        state['Running'].append(node)
-                    continue
-                log.info('Unable to schedule step %s', step['id'])
+            log.debug('Step: %s', step)
+            # Set total_tasks for serial steps to 1 so its treated as a
+            # parallel job on one node with one task
+            # TODO: is this hack valid?
+            if not step['parallel']:
+                step['total_tasks'] = 1
 
-    log.debug('nodes_load: %s', nodes_load)
+            if step['total_tasks'] > 0:
+                nodes = schedule_total_tasks(step, state)
+            elif step['tasks_per_node'] > 0:
+                nodes = schedule_tasks_per_node(step, state)
+            elif step['task_geometry']:
+                nodes = schedule_task_geometry(step, state)
+            else:
+                log.error('Invalid keyword combination for step %s',
+                          step['id'])
+                continue
+            if nodes is not None:
+                nodes_load.update(nodes)
+
+    log.info('Nodes with load: %s', ','.join(nodes_load))
 
     if node_name is not None:
         return 1 if node_name in nodes_load else 0
@@ -199,33 +179,12 @@ def cherub_node_load(node_name=None):
         return [1 if n[0] in nodes_load else 0 for n in cherub_config.cluster]
 
 
-def schedule_serial_step(step, nodes):
-    for node in sorted(nodes, cmp=compare_classes):
-        # TODO: test if necessary
-        if node['startd'] == 'Drained':
-            classes = node['conf_classes']
-        else:
-            classes = node['avail_classes']
-        log.debug('Try to schedule step %s on node %s',
-                  step['id'], node['name'])
-        log.debug('Step class: %s  Avail Classes: %s', step['class'], classes)
-        if classes.get(step['class'], 0) > 0:
-            # TODO: test if necessary
-            if node['startd'] == 'Drained':
-                node['avail_classes'] = dict(node['conf_classes'])
-            node['avail_classes'][step['class']] -= 1
-            log.info('step %s scheduled on node %s',
-                     step['id'], node['name'])
-            return node
-    return None
-
-
 def schedule_parallel_step(step, groups, nodes, multiple_use=False):
     nodes_load = []
     shared = step['shared']
     # copy state so on error the state remains the same
     state = dict(nodes)
-    log.debug('Step %s has groups: %s', step['id'], groups)
+    log.debug('Step %s require groups: %s', step['id'], groups)
     # TODO: does loadl schedule multiple groups on one node if there are
     #       unused nodes for total_tasks scheduling?
     for group in groups:
@@ -271,14 +230,14 @@ def schedule_parallel_group(step, group, nodes):
             classes = node['avail_classes']
         log.debug('Try to schedule step %s on node %s',
                   step['id'], node['name'])
-        log.debug('Step class: %s Group: %d  Avail Classes: %s',
-                  step['class'], group, classes)
+        log.debug('Step class: %d*%s  Avail classes: %s',
+                  group, step['class'], classes)
         if classes.get(step['class'], 0) >= group:
             # TODO: test if necessary
             if node['startd'] == 'Drained':
                 node['avail_classes'] = dict(node['conf_classes'])
             node['avail_classes'][step['class']] -= group
-            log.info('step %s scheduled on node %s',
+            log.info('Scheduled step %s on node %s',
                      step['id'], node['name'])
             return node
     return None
