@@ -41,6 +41,10 @@ A [Cherub](http://www.cs.uni-potsdam.de/bs/research/cluster/index.html#greenit "
 - user/group restrictions
 - `# @requirements = ( Machine == "dx163" )` usage
 - dependency handling        
+- consider step priority
+- if a node is drained are the class available or just configured (API output?)
+- API output of min,max notation
+- handle unlimit blocking (API output?)
 
 ## Optimization
 - cache node status
