@@ -20,17 +20,25 @@ import subprocess
 import logging
 
 log = logging.getLogger()
-log.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)-8s] %(message)s'))
-log.addHandler(ch)
+if len(log.handlers) == 0:
+    log.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)-8s] '
+                                      '%(message)s'))
+    log.addHandler(ch)
 
 
 def cherub_boot(node_adresss):
     """Boot network node
 
     TODO: remote boot network node (use rpower or ipmitool)
+          rpower nodes [on|onstandby|off|suspend|stat|state|reset|boot]
+
+    TODO: filesystem start
+          mmstartup -N node
+
+    TODO: filesystem status??
     """
     return 0
 
@@ -38,7 +46,13 @@ def cherub_boot(node_adresss):
 def cherub_shutdown(node_address):
     """Shutdown network node
 
+    TODO: filesystem unmount and shutdown
+          mmshutdown -N node
+
+    TODO: filesystem status??
+
     TODO: remote shutdown network node (use rpower or ipmitool)
+          rpower nodes [on|onstandby|off|suspend|stat|state|reset|boot]
     """
     return 0
 
@@ -52,6 +66,8 @@ def cherub_sign_off(node_name):
           llctrl -h node_name stop (is this needed?)
     """
     # return ll.ll_control(ll.LL_CONTROL_DRAIN, [node_name], [], [], [], 0)
+    # return ll.llctl(ll.LL_CONTROL_DRAIN, [node_name], [])
+    # return ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
     return 0
 
 
@@ -65,6 +81,8 @@ def cherub_register(node_name):
 
     """
     # return ll.ll_control(ll.LL_CONTROL_RESUME, [node_name], [], [], [], 0)
+    # return ll.llctl(ll.LL_CONTROL_START, [node_name], [])
+    # return ll.llctl(ll.LL_CONTROL_RESUME, [node_name], [])
     return 0
 
 
@@ -80,12 +98,16 @@ def cherub_status(node_name):
     CHERUB_OFFLINE =  2 = if the node is booted but NOT REGISTERT to the RMS
     CHERUB_DOWN    =  3 = if the node is shutdown and NOT REGISTERT to the RMS
 
+
+    TODO: Drain is ONLINE (still registered)
+          STOP? STOPPED? DOWN? is OFFLINE (unregistered)
+          Handle here loadavg?
     """
     STARTD_STATES = {
         'Busy': 0, 'Drain': None, 'Down': -1, 'Idle': 1, 'Running': 0}
         # TODO: What if startd Down and schedd Avail?
 
-    state = llstate(node_name)
+    state = llstate([node_name])[0]
     if state is None or state['startd'] not in STARTD_STATES.keys():
         return -1
 
@@ -116,7 +138,7 @@ def cherub_node_load(node_name=None):
     TODO: step priority
     """
 
-    abort = 0 if node_name is not None else [0]*len(cherub_config.cluster)
+    abort = 0 if node_name is not None else [0] * len(cherub_config.cluster)
 
     # state of all idle, deferred and not queued jobs
     jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
@@ -300,9 +322,6 @@ def schedule_total_tasks(step, nodes):
     total_tasks = step['total_tasks']
     blocking = step['blocking']
     node_count = step['node_count']
-    nodes_load = set()
-    # copy state so on error the state remains the same
-    state = dict(nodes)
     if blocking > 0 and node_count == 0:
         groups = [blocking] * (total_tasks / blocking)
         if total_tasks % blocking != 0:
@@ -354,7 +373,7 @@ def schedule_task_geometry(step, nodes):
     TODO: parse task_geometry api output
 
     """
-    groups = task_geometry
+    groups = step['task_geometry']
     return schedule_parallel_step(step, groups, nodes)
 
 
