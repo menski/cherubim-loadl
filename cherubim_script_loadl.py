@@ -46,6 +46,8 @@ def cherub_boot(node_adresss):
 def cherub_shutdown(node_address):
     """Shutdown network node
 
+    TODO: llctl -h node_name stop (is this needed?)
+
     TODO: filesystem unmount and shutdown
           mmshutdown -N node
 
@@ -53,7 +55,9 @@ def cherub_shutdown(node_address):
 
     TODO: remote shutdown network node (use rpower or ipmitool)
           rpower nodes [on|onstandby|off|suspend|stat|state|reset|boot]
+             on off state/stat are working
     """
+    # return ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
     return 0
 
 
@@ -62,12 +66,10 @@ def cherub_sign_off(node_name):
 
     TODO: sign off node from scheduler (to mark as offline)
             (llctrl -h host stop ?)
-          llctrl -h node_name drain
-          llctrl -h node_name stop (is this needed?)
+          llctl -h node_name drain
     """
     # return ll.ll_control(ll.LL_CONTROL_DRAIN, [node_name], [], [], [], 0)
     # return ll.llctl(ll.LL_CONTROL_DRAIN, [node_name], [])
-    # return ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
     return 0
 
 
@@ -149,6 +151,7 @@ def cherub_node_load(node_name=None):
         return abort
 
     # state of all running, idle and drained nodes
+    # TODO: consider Down state
     nodes = llstate([n[0] for n in cherub_config.cluster],
                     ('Running', 'Idle', 'Drained'))
     if not nodes:
