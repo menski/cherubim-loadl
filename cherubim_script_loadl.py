@@ -443,7 +443,7 @@ def llstate(nodes=None, filter=None):
     return machines
 
 
-def llq(filter=None):
+def llq(state_filter=None, user_filter=None):
     """LoadLeveler Job queue
 
     TODO: requierements keyword
@@ -472,6 +472,9 @@ def llq(filter=None):
             if ll.PyCObjValid(cred):
                 user = ll.ll_get_data(cred, ll.LL_CredentialUserName)
                 group = ll.ll_get_data(cred, ll.LL_CredentialGroupName)
+                if user_filter is not None and user not in user_filter:
+                    job = ll.ll_next_obj(query)
+                    continue
             else:
                 print 'Error during pyloadl.ll_get_data for credentials'
 
@@ -480,7 +483,7 @@ def llq(filter=None):
             while ll.PyCObjValid(step):
                 data = functools.partial(ll.ll_get_data, step)
                 state = data(ll.LL_StepState)
-                if filter is None or state in filter:
+                if state_filter is None or state in state_filter:
                     steps.append({
                         'id': data(ll.LL_StepID),
                         'state': state,
