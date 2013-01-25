@@ -434,6 +434,8 @@ def llstate(nodes=None, filter=None):
                         data(ll.LL_MachineConfiguredClassList)),
                     'avail_classes': element_count(
                         data(ll.LL_MachineAvailableClassList)),
+                    'drain_classes': element_count(
+                        data(ll.LL_MachineDrainClassList)),
                     'run': data(ll.LL_MachineStartdRunningJobs)
                 })
 
