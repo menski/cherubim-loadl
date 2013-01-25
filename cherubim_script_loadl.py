@@ -144,7 +144,7 @@ def cherub_node_load(node_name=None):
 
     # state of all idle, deferred and not queued jobs
     jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
-    log.debug('#Jobs: %d', len(jobs))
+    log.debug('Jobs: %d', len(jobs))
 
     # quit if no jobs are queued
     if not jobs:
@@ -157,8 +157,9 @@ def cherub_node_load(node_name=None):
     if not nodes:
         return abort
     for node in nodes:
-        log.debug('Node: %s (%s) conf: %s avail: %s', node['name'],
-                  node['startd'], node['conf_classes'], node['avail_classes'])
+        log.debug(
+            'Node: %s (%s) %s', sn(node['name']), node['startd'],
+            cl(node['conf_classes'], node['avail_classes']))
     # split nodes on startd state
     state = {'Running': [], 'Idle': [], 'Drained': []}
     for node in nodes:
@@ -182,9 +183,9 @@ def cherub_node_load(node_name=None):
     nodes_load = set()
     for job in jobs:
         log.debug('Handle job %s (contains %s step[s])',
-                  job['name'], len(job['steps']))
+                  sn(job['name']), len(job['steps']))
         for step in job['steps']:
-            log.debug('Step: %s', step)
+            log.debug('Job: %s Step: %s', sn(job['name']), sn(step['id']))
             # Set total_tasks for serial steps to 1 so its treated as a
             # parallel job on one node with one task
             # TODO: is this hack valid?
@@ -226,7 +227,7 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
     shared = step['shared']
     # copy state so on error the state remains the same
     state = dict(nodes)
-    log.debug('Step %s require groups: %s', step['id'], groups)
+    log.debug('Step %s require groups: %s*%s', sn(step['id']), groups, step['class'])
     # TODO: does loadl schedule multiple groups on one node if there are
     #       unused nodes for total_tasks scheduling?
     for group in groups:
@@ -251,7 +252,7 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
             if multiple_use and shared and classes_count(node) > 0:
                 state['Running'].append(node)
             continue
-        log.info('Unable to schedule step %s', step['id'])
+        log.info('Unable to schedule step %s', sn(step['id']))
         return None
     # add selected nodes if there are unused classes
     if shared:
@@ -279,16 +280,17 @@ def schedule_parallel_group(step, group, nodes):
         else:
             classes = node['avail_classes']
         log.debug('Try to schedule step %s on node %s',
-                  step['id'], node['name'])
+                  sn(step['id']), sn(node['name']))
         log.debug('Step class: %d*%s  Avail classes: %s',
-                  group, step['class'], classes)
+                  group, step['class'],
+                  cl(node['conf_classes'], node['avail_classes']))
         if classes.get(step['class'], 0) >= group:
             # TODO: test if necessary
             if node['startd'] == 'Drained':
                 node['avail_classes'] = dict(node['conf_classes'])
             node['avail_classes'][step['class']] -= group
             log.info('Scheduled step %s on node %s',
-                     step['id'], node['name'])
+                     sn(step['id']), sn(node['name']))
             return node
     return None
 
@@ -548,3 +550,20 @@ def compare_classes(a, b):
     a_count = len(a['conf_classes'])
     b_count = len(b['conf_classes'])
     return cmp(a_count, b_count)
+
+
+def sn(name):
+    """Shorten name for logging output (replace .iplex.pik-potsdam.de)"""
+    return name.replace('.iplex.pik-potsdam.de', '')
+
+
+def cl(conf, avail):
+    """Compact representation of configured and available classes
+
+    Returns a string like "short(4/8) medium(8/8)", which means that 8 short
+    and 8 medium classes are configured and 4 short and 8 medium classes are
+    available.
+
+    """
+    return ' '.join(
+            ['%s(%d/%d)' % (c, avail.get(c,0) , conf[c]) for c in conf])
