@@ -24,8 +24,8 @@ if len(log.handlers) == 0:
     log.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
-    ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)-8s] '
-                                      '%(message)s'))
+    ch.setFormatter(
+        logging.Formatter('%(asctime)s %(levelname)s %(message)s', '%H:%M:%S'))
     log.addHandler(ch)
 
 
