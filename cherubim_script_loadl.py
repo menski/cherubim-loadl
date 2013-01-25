@@ -153,7 +153,7 @@ def cherub_node_load(node_name=None):
     # state of all running, idle and drained nodes
     # TODO: consider Down state
     nodes = llstate([n[0] for n in cherub_config.cluster],
-                    ('Running', 'Idle', 'Drained'))
+                    ('Running', 'Idle', 'Drained', 'Down'))
     if not nodes:
         return abort
     for node in nodes:
@@ -161,13 +161,13 @@ def cherub_node_load(node_name=None):
             'Node: %s (%s) %s', sn(node['name']), node['startd'],
             cl(node['conf_classes'], node['avail_classes']))
     # split nodes on startd state
-    state = {'Running': [], 'Idle': [], 'Drained': []}
+    state = {'Running': [], 'Idle': [], 'Drained': [], 'Down': []}
     for node in nodes:
         state[node['startd']].append(node)
-    log.debug('#Nodes: %d (#Running: %d #Idle: %d #Drained: %d)',
+    log.debug('Nodes: %d (Running: %d Idle: %d Drained: %d Down: %d)',
               len(nodes), len(state['Running']), len(state['Idle']),
-              len(state['Drained']))
-    if not state['Idle'] + state['Drained']:
+              len(state['Drained']), len(state['Down']))
+    if not state['Idle'] + state['Drained'] + state['Down']:
         return abort
 
     # LoadL doc: valid keyword combinations (Page 196)
