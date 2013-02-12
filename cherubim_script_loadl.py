@@ -14,7 +14,10 @@ this program; if not, see <http://www.gnu.org/licenses/>.
 """
 
 import cherub_config
-import pyloadl as ll
+import test_serial as test
+# import test_total_tasks as test
+# import test_task_per_node as test
+# import pyloadl as ll
 import functools
 import subprocess
 import logging
@@ -117,8 +120,9 @@ def cherub_status(node_name):
     if status is not None:
         return status
 
-    rc = subprocess.Popen(['ping', '-c', '1', node_name],
-                          stdout=subprocess.PIPE).wait()
+    rc = subprocess.Popen(
+        ['ping', '-c', '1', node_name],
+        stdout=subprocess.PIPE).wait()
     if rc == 0:
         return 2
     else:
@@ -143,8 +147,9 @@ def cherub_node_load(node_name=None):
     abort = 0 if node_name is not None else [0] * len(cherub_config.cluster)
 
     # state of all idle, deferred and not queued jobs
-    jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
-    log.debug('Jobs: %d', len(jobs))
+    # jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
+    jobs = list(test.jobs)
+    log.debug('#Jobs: %d', len(jobs))
 
     # quit if no jobs are queued
     if not jobs:
@@ -152,8 +157,9 @@ def cherub_node_load(node_name=None):
 
     # state of all running, idle and drained nodes
     # TODO: consider Down state
-    nodes = llstate([n[0] for n in cherub_config.cluster],
-                    ('Running', 'Idle', 'Drained', 'Down'))
+    # nodes = llstate([n[0] for n in cherub_config.cluster],
+    #                 ('Running', 'Idle', 'Drained', 'Down'))
+    nodes = list(test.nodes)
     if not nodes:
         return abort
     for node in nodes:
