@@ -17,10 +17,11 @@ import cherub_config
 import test_serial as test
 # import test_total_tasks as test
 # import test_task_per_node as test
-# import pyloadl as ll
+import pyloadl as ll
 import functools
 import subprocess
 import logging
+import re
 
 log = logging.getLogger()
 if len(log.handlers) == 0:
@@ -32,17 +33,84 @@ if len(log.handlers) == 0:
     log.addHandler(ch)
 
 
+def cmd(args):
+    """Execute command and return returncode, stdout and stderr"""
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = proc.communicate()
+    rc = proc.returncode
+    return rc, stdout, stderr
+
+
+def ping(node_name):
+    """Ping node"""
+    return cmd(['ping', '-c', '1', node_name])
+
+
+def mmgetstate(node_name):
+    """Get state of GPFS on node"""
+    node = node_name.split('.', 1)[0]
+    rc, out, err = cmd(['mmgetstate', '-N', node])
+    state = 'unknown'
+    # TODO: check if output is stdout or stderr
+    m = re.search(r'%s\s+(\w+)' % node, out)
+    if m:
+        state = m.group(1)
+    log.debug('GPFS state for node %s is %s (mmgetstate)', node, state)
+    return state
+
+
+def mmshutdown(node_name):
+    """Shutdown GPFS"""
+    node = node_name.split('.', 1)[0]
+    error_strings = ['stale NFS', 'device is busy', 'resource busy']
+    log.debug('Send mmshutdown command to node %s', node)
+    rc, out, err = cmd(['mmshutdown', '-N', node])
+    # TODO: is output on stdout or stderr?
+    if rc != 0:
+        log.error('An error occurred on mmshutdown on node %s', node_name)
+        log.debug(out)
+        log.debug(err)
+        return 1
+    for error_string in error_strings:
+        if error_string in out:
+            log.error('Found error in mmshutdown output of node %s', node_name)
+            log.debug(out)
+            log.debug(err)
+            return 2
+    return 0
+
+
+def rpower(node_name, cmd):
+    """Execute rpower command and return state"""
+    node = node_name.split('.', 1)[0]
+    log.debug('Send rpower %s command to node %s', cmd, node)
+    rc, out, err = cmd(['rpower', node, cmd])
+    # TODO: which output stream to use?
+    power_state = re.search(r'%s:\s+(\w+)' % node, out)
+    if power_state:
+        power_state = power_state.group(1)
+    else:
+        power_state = 'unknown'
+    log.debug('Current rpower state of node %s is %s', node, power_state)
+    return power_state
+
+
 def cherub_boot(node_adresss):
-    """Boot network node
+    """Boot network node"""
+    # Find node name for address
+    for node in cherub_config.cluster:
+        if node[1] == node_address:
+            node_name = node[0]
+            break
+    else:
+        log.error('Unable to find node name for %s', node_address)
+        return 1
 
-    TODO: remote boot network node (use rpower or ipmitool)
-          rpower nodes [on|onstandby|off|suspend|stat|state|reset|boot]
+    power_state = rpower(node_name, 'state')
+    if power_state == 'on':
 
-    TODO: filesystem start
-          mmstartup -N node
 
-    TODO: filesystem status??
-    """
     return 0
 
 
@@ -60,20 +128,90 @@ def cherub_shutdown(node_address):
           rpower nodes [on|onstandby|off|suspend|stat|state|reset|boot]
              on off state/stat are working
     """
-    # return ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
-    return 0
+    # Find node name for address
+    for node in cherub_config.cluster:
+        if node[1] == node_address:
+            node_name = node[0]
+            break
+    else:
+        log.error('Unable to find node name for %s', node_address)
+        return 1
+
+    # Get state of node
+    machines = llstate([node_name])
+    if not machines:
+        log.error('Unable to get status for node %s', node_name)
+        return 2
+
+    # Test if node is drained
+    # TODO: is Drained the correct string or Drnd?
+    startd = machines[0].get('startd', 'Unknown')
+    if startd not in ['Drained', 'Down']:
+        log.error('Node %s is not drained or down (is %s)', node_name, startd)
+        return 3
+
+    # Test load average on node
+    loadavg = machines[0].get('loadavg', None)
+    if loadavg is not None and loadavg > 0.001:
+        log.error('Load average on node %s is greater than 0.001', node_name)
+        return 4
+
+    # Shutdown LoadLeveler if drained
+    # TODO: is Drained the correct string or Drnd?
+    if startd == 'Drained':
+        ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
+
+    # TODO: Find orphanes (which path?)
+    rc, out, err = cmd(['ssh', node_name, 'find_orphans.sh'])
+    if out:
+        log.error('Found orphans on node %s', node_name)
+        return 5
+
+    # Test if GPFS filesystem is active
+    gpfs_state = mmgetstate(node_name)
+    if gpfs_state not in ['active', 'down']:
+        log.error('GPFS state for node %s is not active nor down (is %s)',
+                  node_name, gpfs_state)
+        return 6
+
+    # Unmount GPFS if active
+    if gpfs_state == 'active':
+        # Test if shared storage is not used
+        for storage in ['/iplex/01', '/scratch/01']:
+            rc, out, err = cmd(['ssh', node_name, 'lsof', storage])
+            if rc == 0:
+                log.error('Shared storage %s is in use on node %s',
+                          storage, node_name)
+                log.debug(out)
+                return 7
+        rc = mmshutdown(node_name)
+        if rc != 0:
+            return 8
+
+    # Shutdown node with rpower
+    power_state = rpower(node_name, 'off')
+    log.debug('Shutdown node %s (state: %s)', node_name, power_state)
+
+    return rc
 
 
 def cherub_sign_off(node_name):
-    """Sign off network node from scheduler
+    """Sign off network node from scheduler"""
+    state = llstate([node_name])
+    if not state:
+        return 1
+    else:
+        state = state[0]
 
-    TODO: sign off node from scheduler (to mark as offline)
-            (llctrl -h host stop ?)
-          llctl -h node_name drain
-    """
-    # return ll.ll_control(ll.LL_CONTROL_DRAIN, [node_name], [], [], [], 0)
-    # return ll.llctl(ll.LL_CONTROL_DRAIN, [node_name], [])
-    return 0
+    startd = state['startd']
+
+    if startd == 'Idle':
+        # Start LoadLeveler
+        return ll.llctl(ll.LL_CONTROL_DRAIN, [node_name], [])
+    else:
+        log.error('Wrong LoadLeveler state (%s) of node %s for sign off',
+                  startd, node_name)
+        return 1
 
 
 def cherub_register(node_name):
@@ -85,10 +223,25 @@ def cherub_register(node_name):
             llctrl -h node_name start [drained] (if offline)
 
     """
-    # return ll.ll_control(ll.LL_CONTROL_RESUME, [node_name], [], [], [], 0)
-    # return ll.llctl(ll.LL_CONTROL_START, [node_name], [])
-    # return ll.llctl(ll.LL_CONTROL_RESUME, [node_name], [])
-    return 0
+    state = llstate([node_name])
+    if not state:
+        return 1
+    else:
+        state = state[0]
+
+    startd = state['startd']
+
+    if startd == 'Down':
+        # Start LoadLeveler
+        return ll.llctl(ll.LL_CONTROL_START, [node_name], [])
+    elif startd in ['Drained', 'Draining']:
+        # Resume LoadLeveler
+        # TODO what is the Drained and Draining state string?
+        return ll.llctl(ll.LL_CONTROL_RESUME, [node_name], [])
+    else:
+        log.error('Wrong LoadLeveler state (%s) of node %s for registration',
+                  startd, node_name)
+        return 1
 
 
 def cherub_status(node_name):
@@ -103,26 +256,25 @@ def cherub_status(node_name):
     CHERUB_OFFLINE =  2 = if the node is booted but NOT REGISTERT to the RMS
     CHERUB_DOWN    =  3 = if the node is shutdown and NOT REGISTERT to the RMS
 
-
-    TODO: Drain is ONLINE (still registered)
-          STOP? STOPPED? DOWN? is OFFLINE (unregistered)
-          Handle here loadavg?
     """
-    STARTD_STATES = {
-        'Busy': 0, 'Drain': None, 'Down': -1, 'Idle': 1, 'Running': 0}
-        # TODO: What if startd Down and schedd Avail?
+    # TODO what is the Drained and Draining state string?
+    STARTD_STATES = {'Busy': 0, 'Drained': 2, 'Draining': 1, 'Down': None,
+                     'Idle': 1, 'Running': 0}
 
-    state = llstate([node_name])[0]
-    if state is None or state['startd'] not in STARTD_STATES.keys():
+    state = llstate([node_name])
+    if not state:
+        return -1
+    else:
+        state = state[0]
+
+    if state['startd'] not in STARTD_STATES.keys():
         return -1
 
     status = STARTD_STATES[state['startd']]
     if status is not None:
         return status
 
-    rc = subprocess.Popen(
-        ['ping', '-c', '1', node_name],
-        stdout=subprocess.PIPE).wait()
+    rc, out, err = ping(node_name)
     if rc == 0:
         return 2
     else:
@@ -158,7 +310,7 @@ def cherub_node_load(node_name=None):
     # state of all running, idle and drained nodes
     # TODO: consider Down state
     # nodes = llstate([n[0] for n in cherub_config.cluster],
-    #                 ('Running', 'Idle', 'Drained', 'Down'))
+    #                 ('Running', 'Idle', 'Drning', 'Drned', 'Down'))
     nodes = list(test.nodes)
     if not nodes:
         return abort
@@ -233,7 +385,8 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
     shared = step['shared']
     # copy state so on error the state remains the same
     state = dict(nodes)
-    log.debug('Step %s require groups: %s*%s', sn(step['id']), groups, step['class'])
+    log.debug('Step %s require groups: %s*%s',
+              sn(step['id']), groups, step['class'])
     # TODO: does loadl schedule multiple groups on one node if there are
     #       unused nodes for total_tasks scheduling?
     for group in groups:
@@ -410,7 +563,7 @@ def llstate(nodes=None, filter=None):
     machines = []
     query = ll.ll_query(ll.MACHINES)
     if not ll.PyCObjValid(query):
-        print 'Error during pyloadl.ll_query'
+        log.error('Error during pyloadl.ll_query')
         return machines
 
     if nodes is not None:
@@ -419,13 +572,13 @@ def llstate(nodes=None, filter=None):
         rc = ll.ll_set_request(query, ll.QUERY_ALL, '', ll.ALL_DATA)
 
     if rc != 0:
-        print 'Error during pyloadl.ll_set_request:', rc
+        log.error('Error during pyloadl.ll_set_request: %s', rc)
         ll.ll_deallocate(query)
         return machines
 
     machine, count, err = ll.ll_get_objs(query, ll.LL_CM, '')
     if err != 0:
-        print 'Error during pyloadl.ll_get_objs:', err
+        log.error('Error during pyloadl.ll_get_objs: %s', err)
     elif count > 0:
         while ll.PyCObjValid(machine):
             data = functools.partial(ll.ll_get_data, machine)
@@ -435,7 +588,7 @@ def llstate(nodes=None, filter=None):
                     'name': data(ll.LL_MachineName),
                     'startd': startd,
                     'schedd': data(ll.LL_MachineScheddState),
-                    'ldavg': data(ll.LL_MachineLoadAverage),
+                    'loadavg': data(ll.LL_MachineLoadAverage),
                     'conf_classes': element_count(
                         data(ll.LL_MachineConfiguredClassList)),
                     'avail_classes': element_count(
@@ -462,19 +615,19 @@ def llq(state_filter=None, user_filter=None):
     jobs = []
     query = ll.ll_query(ll.JOBS)
     if not ll.PyCObjValid(query):
-        print 'Error during pyloadl.ll_query'
+        log.error('Error during pyloadl.ll_query')
         return jobs
 
     rc = ll.ll_set_request(query, ll.QUERY_ALL, '', ll.ALL_DATA)
 
     if rc != 0:
-        print 'Error during pyloadl.ll_set_request:', rc
+        log.error('Error during pyloadl.ll_set_request: %s', rc)
         ll.ll_deallocate(query)
         return jobs
 
     job, count, err = ll.ll_get_objs(query, ll.LL_CM, '')
     if err != 0:
-        print 'Error during pyloadl.ll_get_objs:', err
+        log.error('Error during pyloadl.ll_get_objs: %s', err)
     elif count > 0:
         while ll.PyCObjValid(job):
             name = ll.ll_get_data(job, ll.LL_JobName)
@@ -486,7 +639,7 @@ def llq(state_filter=None, user_filter=None):
                     job = ll.ll_next_obj(query)
                     continue
             else:
-                print 'Error during pyloadl.ll_get_data for credentials'
+                log.error('Error during pyloadl.ll_get_data for credentials')
 
             step = ll.ll_get_data(job, ll.LL_JobGetFirstStep)
             steps = []
@@ -574,4 +727,4 @@ def cl(conf, avail):
 
     """
     return ' '.join(
-            ['%s(%d/%d)' % (c, avail.get(c,0) , conf[c]) for c in conf])
+        ['%s(%d/%d)' % (c, avail.get(c, 0), conf[c]) for c in conf])
