@@ -307,13 +307,13 @@ def cherub_node_load(node_name=None):
             'Node: %s (%s) %s', sn(node['name']), node['startd'],
             cl(node['conf_classes'], node['avail_classes']))
     # split nodes on startd state
-    state = {'Running': [], 'Idle': [], 'Drained': [], 'Down': []}
+    state = {'Running': [], 'Idle': [], 'Drain': [], 'Down': []}
     for node in nodes:
         state[node['startd']].append(node)
     log.debug('Nodes: %d (Running: %d Idle: %d Drained: %d Down: %d)',
               len(nodes), len(state['Running']), len(state['Idle']),
-              len(state['Drained']), len(state['Down']))
-    if not state['Idle'] + state['Drained'] + state['Down']:
+              len(state['Drain']), len(state['Down']))
+    if not state['Idle'] + state['Drain'] + state['Down']:
         return abort
 
     # LoadL doc: valid keyword combinations (Page 196)
@@ -347,6 +347,7 @@ def cherub_node_load(node_name=None):
             else:
                 log.error('Invalid keyword combination for step %s',
                           step['id'])
+                log.debug('Step: %s', step)
                 continue
             if nodes is not None:
                 nodes_load.update(nodes)
@@ -392,10 +393,10 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
             if multiple_use and shared and classes_count(node) > 0:
                 state['Running'].append(node)
             continue
-        node = schedule_parallel_group(step, group, state['Drained'])
+        node = schedule_parallel_group(step, group, state['Drain'])
         if node is not None:
             nodes_load.append(node)
-            state['Drained'].remove(node)
+            state['Drain'].remove(node)
             if multiple_use and shared and classes_count(node) > 0:
                 state['Running'].append(node)
             continue
@@ -475,8 +476,13 @@ def schedule_total_tasks(step, nodes):
         groups = []
         for n in range(node_count, 0, -1):
             groups.append((total_tasks - sum(groups)) / n)
+    elif node_count > 0 and blocking == -1:
+        #blocking unlimited
+        log.debug('Unlimited blocking not implemented')
+        return None
     else:
         log.error('Invalid keyword combination for step %s', step['id'])
+        log.debug('Step: %s', step)
         return None
     return schedule_parallel_step(step, groups, nodes, True)
 
