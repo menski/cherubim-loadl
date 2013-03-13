@@ -96,7 +96,7 @@ def rpower(node_name, cmd):
     return power_state
 
 
-def cherub_boot(node_adresss):
+def cherub_boot(node_address):
     """Boot network node"""
     # Find node name for address
     for node in cherub_config.cluster:
@@ -109,8 +109,11 @@ def cherub_boot(node_adresss):
 
     power_state = rpower(node_name, 'state')
     if power_state == 'on':
-
-
+        rc, out, err = ping(node_name)
+        if rc == 0:
+            return 0
+        else:
+            return 1
     return 0
 
 
