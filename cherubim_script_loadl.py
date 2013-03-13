@@ -14,9 +14,6 @@ this program; if not, see <http://www.gnu.org/licenses/>.
 """
 
 import cherub_config
-#import test_serial as test
-# import test_total_tasks as test
-# import test_task_per_node as test
 import pyloadl as ll
 import functools
 import subprocess
@@ -66,13 +63,13 @@ def mmshutdown(node_name):
     error_strings = ['stale NFS', 'device is busy', 'resource busy']
     log.debug('Send mmshutdown command to node %s', node)
     rc, out, err = cmd(['mmshutdown', '-N', node])
-    # TODO: is output on stdout or stderr?
     if rc != 0:
         log.error('An error occurred on mmshutdown on node %s', node_name)
         log.debug(out)
         log.debug(err)
         return 1
     for error_string in error_strings:
+        # TODO: is output on stdout or stderr?
         if error_string in out:
             log.error('Found error in mmshutdown output of node %s', node_name)
             log.debug(out)
@@ -114,23 +111,18 @@ def cherub_boot(node_address):
             return 0
         else:
             return 1
-    return 0
+    elif power_state == 'off':
+        power_state = rpower(node_name, 'on')
+        log.debug('Boot node %s (state: %s)', node_name, power_state)
+        return 0
+    else:
+        log.debug('Invalid power state for booting %s %s',
+                  node_name, power_state)
+        return 1
 
 
 def cherub_shutdown(node_address):
-    """Shutdown network node
-
-    TODO: llctl -h node_name stop (is this needed?)
-
-    TODO: filesystem unmount and shutdown
-          mmshutdown -N node
-
-    TODO: filesystem status??
-
-    TODO: remote shutdown network node (use rpower or ipmitool)
-          rpower nodes [on|onstandby|off|suspend|stat|state|reset|boot]
-             on off state/stat are working
-    """
+    """Shutdown network node"""
     # Find node name for address
     for node in cherub_config.cluster:
         if node[1] == node_address:
@@ -146,29 +138,27 @@ def cherub_shutdown(node_address):
         log.error('Unable to get status for node %s', node_name)
         return 2
 
-    # Test if node is drained
-    # TODO: is Drained the correct string or Drnd?
+    # Test if node is drained or down
     startd = machines[0].get('startd', 'Unknown')
-    if startd not in ['Drained', 'Down']:
+    if startd not in ['Drain', 'Down']:
         log.error('Node %s is not drained or down (is %s)', node_name, startd)
         return 3
 
     # Test load average on node
     loadavg = machines[0].get('loadavg', None)
-    if loadavg is not None and loadavg > 0.001:
+    if loadavg is None or loadavg > 0.001:
         log.error('Load average on node %s is greater than 0.001', node_name)
         return 4
-
-    # Shutdown LoadLeveler if drained
-    # TODO: is Drained the correct string or Drnd?
-    if startd == 'Drained':
-        ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
 
     # TODO: Find orphanes (which path?)
     rc, out, err = cmd(['ssh', node_name, 'find_orphans.sh'])
     if out:
         log.error('Found orphans on node %s', node_name)
         return 5
+
+    # Shutdown LoadLeveler if drained
+    if startd == 'Drain':
+        ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
 
     # Test if GPFS filesystem is active
     gpfs_state = mmgetstate(node_name)
@@ -189,6 +179,7 @@ def cherub_shutdown(node_address):
                 return 7
         rc = mmshutdown(node_name)
         if rc != 0:
+            # TODO: How to handle mmshutdown error?
             return 8
 
     # Shutdown node with rpower
@@ -218,14 +209,7 @@ def cherub_sign_off(node_name):
 
 
 def cherub_register(node_name):
-    """Register network node at scheduler
-
-    TODO: Register node at scheduler (for further scheduling)
-            (llinit?, llctrl -h host start ?)
-            llctrl -h node_name resume (if online)
-            llctrl -h node_name start [drained] (if offline)
-
-    """
+    """Register network node at scheduler"""
     state = llstate([node_name])
     if not state:
         return 1
@@ -237,9 +221,8 @@ def cherub_register(node_name):
     if startd == 'Down':
         # Start LoadLeveler
         return ll.llctl(ll.LL_CONTROL_START, [node_name], [])
-    elif startd in ['Drained', 'Draining']:
+    elif startd == 'Drain':
         # Resume LoadLeveler
-        # TODO what is the Drained and Draining state string?
         return ll.llctl(ll.LL_CONTROL_RESUME, [node_name], [])
     else:
         log.error('Wrong LoadLeveler state (%s) of node %s for registration',
@@ -260,9 +243,8 @@ def cherub_status(node_name):
     CHERUB_DOWN    =  3 = if the node is shutdown and NOT REGISTERT to the RMS
 
     """
-    # TODO what is the Drained and Draining state string?
-    STARTD_STATES = {'Busy': 0, 'Drained': 2, 'Draining': 1, 'Down': None,
-                     'Idle': 1, 'Running': 0}
+    STARTD_STATES = {'Busy': 0,  'Running': 0, 'Idle': 1,
+                     'Drain': None, 'Down': None}
 
     state = llstate([node_name])
     if not state:
@@ -276,6 +258,12 @@ def cherub_status(node_name):
     status = STARTD_STATES[state['startd']]
     if status is not None:
         return status
+
+    if state['startd'] == 'Drain':
+        if state['loadavg'] > 0.001:
+            return 1
+        else:
+            return 2
 
     rc, out, err = ping(node_name)
     if rc == 0:
@@ -303,18 +291,15 @@ def cherub_node_load(node_name=None):
 
     # state of all idle, deferred and not queued jobs
     jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
-    # jobs = list(test.jobs)
     log.debug('#Jobs: %d', len(jobs))
 
     # quit if no jobs are queued
     if not jobs:
         return abort
 
-    # state of all running, idle and drained nodes
-    # TODO: consider Down state
+    # state of all running, idle, drained and down nodes
     nodes = llstate([n[0] for n in cherub_config.cluster],
-                    ('Running', 'Idle', 'Drning', 'Drned', 'Down'))
-    # nodes = list(test.nodes)
+                    ('Running', 'Idle', 'Drain', 'Down'))
     if not nodes:
         return abort
     for node in nodes:
@@ -436,20 +421,13 @@ def schedule_parallel_group(step, group, nodes):
     Return suitable node or None on error.
     """
     for node in sorted(nodes, cmp=compare_classes):
-        # TODO: test if necessary
-        if node['startd'] == 'Drained':
-            classes = node['conf_classes']
-        else:
-            classes = node['avail_classes']
+        classes = node['avail_classes']
         log.debug('Try to schedule step %s on node %s',
                   sn(step['id']), sn(node['name']))
         log.debug('Step class: %d*%s  Avail classes: %s',
                   group, step['class'],
                   cl(node['conf_classes'], node['avail_classes']))
         if classes.get(step['class'], 0) >= group:
-            # TODO: test if necessary
-            if node['startd'] == 'Drained':
-                node['avail_classes'] = dict(node['conf_classes'])
             node['avail_classes'][step['class']] -= group
             log.info('Scheduled step %s on node %s',
                      sn(step['id']), sn(node['name']))

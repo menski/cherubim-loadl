@@ -2,6 +2,60 @@
 
 A [Cherub](http://www.cs.uni-potsdam.de/bs/research/cluster/index.html#greenit "CHERUB: power consumption aware cluster resource management") plugin for the workload scheduler [LoadLeveler](http://www-03.ibm.com/systems/software/loadleveler/ "Tivoli Workload Scheduler LoadLeveler").
 
+## Boot/Shutdown Tests
+
+### TODO
+- 53: Which output stream uses `mmgetstate` (stdout or stderr)?
+- 73: Which output stream uses `mmshutdown` (stdout or stderr)?
+- 87: Wichh output stream uses `rpower` (stdout or stderr)?
+- 154: Path of `find_orphanes.sh` script?
+- 183: How to handle mmshutdown error?
+
+### Functions
+
+#### cherub_boot(node_address)
+
+    get rpower state for node
+    if power state is 'on':
+        ping node
+    elif power state is 'off':
+        rpower node on
+    else:
+        return error 'Invalid power state'
+
+#### cherub_shutdown(node_address)
+
+    get node_name from address
+    get state of node
+    assert that startd is 'Drain' or 'Down'
+    assert loadavg is less equal 0.001 
+    assert no orphans are running       # ssh node find_orphans.sh
+    if stard == 'Drain':
+        llctl stop node                 # stop LoadLevler process
+    assert gpfs state is 'active' or 'down'
+    if gpfs state == 'active':
+        assert mount points aren't used # ssh node lsof /iplex/01 /scratch/01
+        mmshutdown node
+    rpower off
+
+#### cherub_sign_off(node_name)
+
+    get startd state
+    if startd == 'Idle':
+        llctl drain node
+    else:
+        return error 'Wrong state'
+
+#### cherub_register(node_name)
+
+    get startd state
+    if startd == 'Down':
+        llctl start node
+    elif startd == 'Drain':
+        llctl resume node
+    else:
+        return error 'Wrong state'
+
 ## Job Command File (JCF)
 
 ### General
