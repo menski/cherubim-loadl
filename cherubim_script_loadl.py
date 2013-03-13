@@ -50,7 +50,7 @@ def mmgetstate(node_name):
     rc, out, err = cmd(['mmgetstate', '-N', node])
     state = 'unknown'
     # TODO: check if output is stdout or stderr
-    m = re.search(r'%s\s+(\w+)' % node, out)
+    m = re.search(r'%sib\s+(\w+)' % node, out)
     if m:
         state = m.group(1)
     log.debug('GPFS state for node %s is %s (mmgetstate)', node, state)
@@ -78,11 +78,11 @@ def mmshutdown(node_name):
     return 0
 
 
-def rpower(node_name, cmd):
+def rpower(node_name, command):
     """Execute rpower command and return state"""
     node = node_name.split('.', 1)[0]
-    log.debug('Send rpower %s command to node %s', cmd, node)
-    rc, out, err = cmd(['rpower', node, cmd])
+    log.debug('Send rpower %s command to node %s', command, node)
+    rc, out, err = cmd(['rpower', node, command])
     # TODO: which output stream to use?
     power_state = re.search(r'%s:\s+(\w+)' % node, out)
     if power_state:
@@ -151,14 +151,14 @@ def cherub_shutdown(node_address):
         return 4
 
     # TODO: Find orphanes (which path?)
-    rc, out, err = cmd(['ssh', node_name, 'find_orphans.sh'])
+    rc, out, err = cmd(['ssh', node_name, '/iplex/01/sys/loadl/find_orphanes.sh'])
     if out:
         log.error('Found orphans on node %s', node_name)
         return 5
 
     # Shutdown LoadLeveler if drained
     if startd == 'Drain':
-        ll.llctl(ll.LL_CONTROL_STOP, [node_name], [])
+        ll.llctl(ll.LL_CONTROL_STOP, [], [node_name])
 
     # Test if GPFS filesystem is active
     gpfs_state = mmgetstate(node_name)
@@ -201,7 +201,7 @@ def cherub_sign_off(node_name):
 
     if startd == 'Idle':
         # Start LoadLeveler
-        return ll.llctl(ll.LL_CONTROL_DRAIN, [node_name], [])
+        return ll.llctl(ll.LL_CONTROL_DRAIN, [], [node_name])
     else:
         log.error('Wrong LoadLeveler state (%s) of node %s for sign off',
                   startd, node_name)
@@ -220,10 +220,10 @@ def cherub_register(node_name):
 
     if startd == 'Down':
         # Start LoadLeveler
-        return ll.llctl(ll.LL_CONTROL_START, [node_name], [])
+        return ll.llctl(ll.LL_CONTROL_START, [], [node_name])
     elif startd == 'Drain':
         # Resume LoadLeveler
-        return ll.llctl(ll.LL_CONTROL_RESUME, [node_name], [])
+        return ll.llctl(ll.LL_CONTROL_RESUME, [], [node_name])
     else:
         log.error('Wrong LoadLeveler state (%s) of node %s for registration',
                   startd, node_name)
