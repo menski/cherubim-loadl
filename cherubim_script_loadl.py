@@ -1,4 +1,4 @@
-"""Copyright (C) 2012 Sebastian Menski
+"""Copyright (C) 2013 Sebastian Menski
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -14,11 +14,12 @@ this program; if not, see <http://www.gnu.org/licenses/>.
 """
 
 import cherub_config
-import pyloadl as ll
 import functools
 import subprocess
 import logging
 import re
+import ast
+import copy
 
 log = logging.getLogger()
 if len(log.handlers) == 0:
@@ -28,6 +29,18 @@ if len(log.handlers) == 0:
     ch.setFormatter(
         logging.Formatter('%(asctime)s %(levelname)s %(message)s', '%H:%M:%S'))
     log.addHandler(ch)
+
+try:
+    import pyloadl as ll
+except:
+    log.warning('Necessary pyloadl module not found. Only use for testing.')
+
+    class ll():
+        LL_CONTROL_START = 2
+        LL_CONTROL_STOP = 3
+        LL_CONTROL_DRAIN = 4
+        LL_CONTROL_RESUME = 10
+        STATE_IDLE = 0
 
 
 def cmd(args):
@@ -49,7 +62,6 @@ def mmgetstate(node_name):
     node = node_name.split('.', 1)[0]
     rc, out, err = cmd(['mmgetstate', '-N', node])
     state = 'unknown'
-    # TODO: check if output is stdout or stderr
     m = re.search(r'%sib\s+(\w+)' % node, out)
     if m:
         state = m.group(1)
@@ -69,7 +81,6 @@ def mmshutdown(node_name):
         log.debug(err)
         return 1
     for error_string in error_strings:
-        # TODO: is output on stdout or stderr?
         if error_string in out:
             log.error('Found error in mmshutdown output of node %s', node_name)
             log.debug(out)
@@ -83,7 +94,6 @@ def rpower(node_name, command):
     node = node_name.split('.', 1)[0]
     log.debug('Send rpower %s command to node %s', command, node)
     rc, out, err = cmd(['rpower', node, command])
-    # TODO: which output stream to use?
     power_state = re.search(r'%s:\s+(\w+)' % node, out)
     if power_state:
         power_state = power_state.group(1)
@@ -150,22 +160,25 @@ def cherub_shutdown(node_address):
         log.error('Load average on node %s is greater than 0.001', node_name)
         return 4
 
-    # TODO: Find orphanes (which path?)
-    rc, out, err = cmd(['ssh', node_name, '/iplex/01/sys/loadl/find_orphanes.sh'])
+    rc, out, err = cmd(
+        ['ssh', node_name, '/iplex/01/sys/loadl/find_orphanes.sh'])
     if out:
         log.error('Found orphans on node %s', node_name)
         return 5
 
     # Shutdown LoadLeveler if drained
     if startd == 'Drain':
-        ll.llctl(ll.LL_CONTROL_STOP, [], [node_name])
+        rc = llctl(ll.LL_CONTROL_STOP, node_name)
+        if rc != 0:
+            log.error('Unable to shutdown LoadLeveler on node %s', node_name)
+            return 6
 
     # Test if GPFS filesystem is active
     gpfs_state = mmgetstate(node_name)
     if gpfs_state not in ['active', 'down']:
         log.error('GPFS state for node %s is not active nor down (is %s)',
                   node_name, gpfs_state)
-        return 6
+        return 7
 
     # Unmount GPFS if active
     if gpfs_state == 'active':
@@ -176,17 +189,17 @@ def cherub_shutdown(node_address):
                 log.error('Shared storage %s is in use on node %s',
                           storage, node_name)
                 log.debug(out)
-                return 7
+                return 8
         rc = mmshutdown(node_name)
         if rc != 0:
-            # TODO: How to handle mmshutdown error?
-            return 8
+            log.error('mmshutdown returned an error')
+            return 9
 
     # Shutdown node with rpower
     power_state = rpower(node_name, 'off')
     log.debug('Shutdown node %s (state: %s)', node_name, power_state)
 
-    return rc
+    return 0
 
 
 def cherub_sign_off(node_name):
@@ -201,7 +214,7 @@ def cherub_sign_off(node_name):
 
     if startd == 'Idle':
         # Start LoadLeveler
-        return ll.llctl(ll.LL_CONTROL_DRAIN, [], [node_name])
+        return llctl(ll.LL_CONTROL_DRAIN, node_name)
     else:
         log.error('Wrong LoadLeveler state (%s) of node %s for sign off',
                   startd, node_name)
@@ -220,10 +233,12 @@ def cherub_register(node_name):
 
     if startd == 'Down':
         # Start LoadLeveler
-        return ll.llctl(ll.LL_CONTROL_START, [], [node_name])
+        # return llctl(ll.LL_CONTROL_START, node_name)
+        rc, out, err = cmd(['llctl', '-h', node_name, 'start'])
+        return rc
     elif startd == 'Drain':
         # Resume LoadLeveler
-        return ll.llctl(ll.LL_CONTROL_RESUME, [], [node_name])
+        return llctl(ll.LL_CONTROL_RESUME, node_name)
     else:
         log.error('Wrong LoadLeveler state (%s) of node %s for registration',
                   startd, node_name)
@@ -272,25 +287,35 @@ def cherub_status(node_name):
         return 3
 
 
-def cherub_node_load(node_name=None):
+def cherub_node_load(node_name):
     """Load of network node
 
     -1 = if an error occured
      0 = the given node has no load
      1 = the given node has load (to indicate that he must be started)
+    """
+    try:
+        node_id = [n[0] for n in cherub_config.cluster].index(node_name)
+        nodes_load = cherub_nodes_load()
+        return nodes_load[node_id]
+    except:
+        return -1
 
-    TODO: which state is the important? Idle or Not Queued?
-          I think Not Queued is not the right (page 722).
-          Derefered for parallel Jobs is interesting.
-    TODO: consider user/group restriction
-    TODO: node min/max notation
-    TODO: step priority
+
+def cherub_nodes_load():
+    """Load for every configured network node
+
+    -1 = if an error occured
+     0 = the node has no load
+     1 = the node has load (to indicate that he must be started)
+
+     Returns a list with an entry for every node
     """
 
-    abort = 0 if node_name is not None else [0] * len(cherub_config.cluster)
+    abort = [0] * len(cherub_config.cluster)
 
     # state of all idle, deferred and not queued jobs
-    jobs = llq((ll.STATE_IDLE, ll.STATE_DEFERRED, ll.STATE_NOTQUEUED))
+    jobs = llq((ll.STATE_IDLE, ))
     log.debug('#Jobs: %d', len(jobs))
 
     # quit if no jobs are queued
@@ -313,8 +338,6 @@ def cherub_node_load(node_name=None):
     log.debug('Nodes: %d (Running: %d Idle: %d Drained: %d Down: %d)',
               len(nodes), len(state['Running']), len(state['Idle']),
               len(state['Drain']), len(state['Down']))
-    if not state['Idle'] + state['Drain'] + state['Down']:
-        return abort
 
     # LoadL doc: valid keyword combinations (Page 196)
     # Keyword          | Valid Combinations
@@ -334,7 +357,6 @@ def cherub_node_load(node_name=None):
             log.debug('Job: %s Step: %s', sn(job['name']), sn(step['id']))
             # Set total_tasks for serial steps to 1 so its treated as a
             # parallel job on one node with one task
-            # TODO: is this hack valid?
             if not step['parallel']:
                 step['total_tasks'] = 1
 
@@ -354,10 +376,7 @@ def cherub_node_load(node_name=None):
 
     log.info('Nodes with load: %s', ','.join(nodes_load))
 
-    if node_name is not None:
-        return 1 if node_name in nodes_load else 0
-    else:
-        return [1 if n[0] in nodes_load else 0 for n in cherub_config.cluster]
+    return [1 if n[0] in nodes_load else 0 for n in cherub_config.cluster]
 
 
 def schedule_parallel_step(step, groups, nodes, multiple_use=False):
@@ -372,12 +391,10 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
     """
     nodes_load = []
     shared = step['shared']
-    # copy state so on error the state remains the same
-    state = dict(nodes)
+    # deep copy state so on error the state remains the same
+    state = copy.deepcopy(nodes)
     log.debug('Step %s require groups: %s*%s',
               sn(step['id']), groups, step['class'])
-    # TODO: does loadl schedule multiple groups on one node if there are
-    #       unused nodes for total_tasks scheduling?
     for group in groups:
         if shared:
             node = schedule_parallel_group(step, group, state['Running'])
@@ -397,6 +414,13 @@ def schedule_parallel_step(step, groups, nodes, multiple_use=False):
         if node is not None:
             nodes_load.append(node)
             state['Drain'].remove(node)
+            if multiple_use and shared and classes_count(node) > 0:
+                state['Running'].append(node)
+            continue
+        node = schedule_parallel_group(step, group, state['Down'])
+        if node is not None:
+            nodes_load.append(node)
+            state['Down'].remove(node)
             if multiple_use and shared and classes_count(node) > 0:
                 state['Running'].append(node)
             continue
@@ -461,25 +485,20 @@ def schedule_total_tasks(step, nodes):
         factor, the remainder of tasks are allocated to a single node."
 
     Returns a set of node names with load or None on error.
-
-    TODO: handle unlimited blocking
-
     """
     total_tasks = step['total_tasks']
     blocking = step['blocking']
-    node_count = step['node_count']
-    if blocking > 0 and node_count == 0:
+    node_count = step['node_count'][0]
+    if blocking > 0:
         groups = [blocking] * (total_tasks / blocking)
         if total_tasks % blocking != 0:
             groups.append(total_tasks % blocking)
+    elif blocking == -1:
+        groups = [1] * total_tasks
     elif node_count > 0 and blocking == 0:
         groups = []
         for n in range(node_count, 0, -1):
             groups.append((total_tasks - sum(groups)) / n)
-    elif node_count > 0 and blocking == -1:
-        #blocking unlimited
-        log.debug('Unlimited blocking not implemented')
-        return None
     else:
         log.error('Invalid keyword combination for step %s', step['id'])
         log.debug('Step: %s', step)
@@ -500,12 +519,14 @@ def schedule_tasks_per_node(step, nodes):
         value among the specified number of nodes."
 
     Returns a set of node names with load or None on error.
-
-    TODO: implement node min max notation
-
     """
-    groups = [step['tasks_per_node']] * step['node_count']
-    return schedule_parallel_step(step, groups, nodes)
+    node_min, node_max = step['node_count']
+    for node_count in range(node_max, node_min - 1, -1):
+        groups = [step['tasks_per_node']] * node_count
+        result = schedule_parallel_step(step, groups, nodes, True)
+        if result is not None:
+            break
+    return result
 
 
 def schedule_task_geometry(step, nodes):
@@ -521,10 +542,8 @@ def schedule_task_geometry(step, nodes):
 
     Returns a set of node names with load or None on error.
 
-    TODO: parse task_geometry api output
-
     """
-    groups = step['task_geometry']
+    groups = [len(g) for g in step['task_geometry']]
     return schedule_parallel_step(step, groups, nodes)
 
 
@@ -542,10 +561,7 @@ def cherub_global_load():
 
 
 def llstate(nodes=None, filter=None):
-    """LoadLeveler State of netwerk node
-
-    TODO: caching needed?
-    """
+    """LoadLeveler State of netwerk node"""
 
     machines = []
     query = ll.ll_query(ll.MACHINES)
@@ -594,11 +610,7 @@ def llstate(nodes=None, filter=None):
 
 
 def llq(state_filter=None, user_filter=None):
-    """LoadLeveler Job queue
-
-    TODO: requierements keyword
-    TODO: dependency keyword
-    """
+    """LoadLeveler Job queue"""
     jobs = []
     query = ll.ll_query(ll.JOBS)
     if not ll.PyCObjValid(query):
@@ -634,7 +646,7 @@ def llq(state_filter=None, user_filter=None):
                 data = functools.partial(ll.ll_get_data, step)
                 state = data(ll.LL_StepState)
                 if state_filter is None or state in state_filter:
-                    steps.append({
+                    s = {
                         'id': data(ll.LL_StepID),
                         'state': state,
                         'pri': data(ll.LL_StepPriority),
@@ -645,11 +657,32 @@ def llq(state_filter=None, user_filter=None):
                         'tasks_per_node':
                             data(ll.LL_StepTasksPerNodeRequested),
                         'blocking': data(ll.LL_StepBlocking),
-                        'node_count': data(ll.LL_StepNodeCount),
+                        'node_count': data(ll.LL_StepTotalNodesRequested),
                         'shared':
                             data(ll.LL_StepNodeUsage) == ll.SHARED,
                         'task_geometry': data(ll.LL_StepTaskGeometry),
-                    })
+                    }
+
+                    # post process node_count and task_geometry
+                    if s['node_count']:
+                        nodes = ast.literal_eval(s['node_count'])
+                        if isinstance(nodes, int):
+                            s['node_count'] = [nodes] * 2
+                        elif len(nodes) == 1:
+                            s['node_count'] = nodes * 2
+                        else:
+                            log.error('Error during parsing of nodes_count')
+                    else:
+                        s['node_count'] = (1, 1)
+
+                    if s['task_geometry']:
+                        s['task_geometry'] = ast.literal_eval(
+                            s['task_geometry'].translate(
+                                None, '{} ').replace(')', '),')
+                        )
+
+                    # add to steps list
+                    steps.append(s)
 
                 step = ll.ll_get_data(job, ll.LL_JobGetNextStep)
 
@@ -662,6 +695,11 @@ def llq(state_filter=None, user_filter=None):
     ll.ll_deallocate(query)
 
     return jobs
+
+
+def llctl(command, node_name):
+    """Wrapper for llctl command"""
+    return ll.llctl(command, [], [node_name])
 
 
 def element_count(l):
