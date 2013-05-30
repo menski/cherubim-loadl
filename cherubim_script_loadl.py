@@ -20,6 +20,7 @@ import logging
 import re
 import ast
 import copy
+import multiprocessing
 
 log = logging.getLogger()
 if len(log.handlers) == 0:
@@ -243,6 +244,12 @@ def cherub_register(node_name):
         log.error('Wrong LoadLeveler state (%s) of node %s for registration',
                   startd, node_name)
         return 1
+
+
+def cherub_status_parallel():
+    """Request status for every network node in parallel"""
+    p = multiprocessing.Pool()
+    return p.map(cherub_status, [n[0] for n in cherub_config.cluster])
 
 
 def cherub_status(node_name):
