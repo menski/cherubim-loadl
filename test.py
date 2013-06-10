@@ -265,12 +265,11 @@ def test_cherub_sign_off():
 
 def test_cherub_register_node_down():
     cherub.llstate = Mock(return_value=[{'startd': 'Down'}])
-    cherub.llctl = Mock(return_value=0)
+    cherub.cmd = Mock(return_value=[0, '', ''])
 
     rc = cherub.cherub_register('node001')
     cherub.llstate.assert_called_once_with(['node001'])
-    cherub.llctl.assert_called_once_with(
-        pyloadl_stub.LL_CONTROL_START, 'node001')
+    cherub.cmd.assert_called_once_with(['llctl', '-h', 'node001', 'start'])
     assert rc == 0
 
 
