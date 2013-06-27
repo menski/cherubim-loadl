@@ -9,5 +9,5 @@ etc
 *.log
 *.out
 master.pdf
-*.tex
+master.tex
 *.toc
