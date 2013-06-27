@@ -1,3 +1,13 @@
 cherub_config.py
 *.pyc
 etc
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+master.pdf
+*.tex
+*.toc
